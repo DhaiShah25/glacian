@@ -1,4 +1,3 @@
-use ash::vk;
 use minifb::{Key, Window, WindowOptions};
 
 fn main() {
@@ -19,7 +18,7 @@ fn main() {
     )
     .unwrap();
 
-    let mut r = glade::render::VkRenderer::new(&window).unwrap();
+    let mut r = glade::render::RenderEngine::new(&window).unwrap();
 
     window.set_target_fps(60);
 
@@ -28,12 +27,11 @@ fn main() {
     while window.is_open() && !window.is_key_down(Key::Escape) {
         window.update();
 
-        let mut resized = false;
-        if window_size != window.get_size() {
+        if window_size == window.get_size() {
+            r.render(false, &window, (window_size.0 as f32, window_size.1 as f32));
+        } else {
             window_size = window.get_size();
-            r.resize(&window);
-            resized = true;
+            r.render(true, &window, (window_size.0 as f32, window_size.1 as f32));
         }
-        r.render(resized, (window_size.0 as f32, window_size.1 as f32));
     }
 }

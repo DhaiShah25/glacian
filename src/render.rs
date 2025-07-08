@@ -2,7 +2,12 @@ use ash::vk;
 use thiserror::Error;
 use tracing::{debug, error, info, trace, warn};
 
-pub struct VkRenderer {
+mod utils;
+use utils::{AllocatedImage, DelQueue, FrameData};
+mod swapchain;
+use swapchain::SwapchainData;
+
+pub struct RenderEngine {
     pub entry: ash::Entry,
     pub instance: ash::Instance,
     pub device: ash::Device,
@@ -14,71 +19,18 @@ pub struct VkRenderer {
         ash::ext::debug_utils::Instance,
         ash::vk::DebugUtilsMessengerEXT,
     ),
-    image_views: Vec<vk::ImageView>,
-    swapchain_device: ash::khr::swapchain::Device,
-    swapchain: vk::SwapchainKHR,
-    surface_loader: ash::khr::surface::Instance,
-    surface: vk::SurfaceKHR,
+
+    swapchain_data: SwapchainData,
 
     frame_data: [FrameData; 2],
     frame_count: usize,
 
     allocator: vk_mem::Allocator,
-}
 
-#[derive(Copy, Clone, Debug)]
-struct FrameData {
-    render_fence: vk::Fence,
-    swapchain_semaphore: vk::Semaphore,
-    render_semaphore: vk::Semaphore,
-    pool: vk::CommandPool,
-    buf: vk::CommandBuffer,
-}
+    draw_image: AllocatedImage,
+    draw_extent: vk::Extent2D,
 
-impl FrameData {
-    fn new(device: &ash::Device) -> Self {
-        let pool = unsafe {
-            device.create_command_pool(
-                &vk::CommandPoolCreateInfo::default()
-                    .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
-                None,
-            )
-        }
-        .unwrap();
-        let cmd_bufs = unsafe {
-            device.allocate_command_buffers(
-                &vk::CommandBufferAllocateInfo::default()
-                    .command_pool(pool)
-                    .level(vk::CommandBufferLevel::PRIMARY)
-                    .command_buffer_count(1),
-            )
-        }
-        .unwrap();
-        let buf = match cmd_bufs.get(0) {
-            Some(s) => *s,
-            None => panic!("Unable to allocate command buffers"),
-        };
-
-        let render_fence = unsafe {
-            device.create_fence(
-                &vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED),
-                None,
-            )
-        }
-        .unwrap();
-        let swapchain_semaphore =
-            unsafe { device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None) }.unwrap();
-        let render_semaphore =
-            unsafe { device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None) }.unwrap();
-
-        Self {
-            render_fence,
-            swapchain_semaphore,
-            render_semaphore,
-            pool,
-            buf,
-        }
-    }
+    del_queue: utils::DelQueue,
 }
 
 #[derive(Error, Debug)]
@@ -87,7 +39,7 @@ pub enum VkCreationError {
     VulkanLoaderFailed(#[from] ash::LoadingError),
 }
 
-impl VkRenderer {
+impl RenderEngine {
     const fn get_current_framedata(&self) -> FrameData {
         self.frame_data[self.frame_count % 2]
     }
@@ -229,15 +181,14 @@ impl VkRenderer {
 
         let queue = unsafe { device.get_device_queue(qfamindices, 0) };
 
-        let (image_views, swapchain_device, swapchain, surface_loader, surface) =
-            Self::create_swapchain(
-                window,
-                &entry,
-                &instance,
-                &physical_device,
-                &[qfamindices],
-                &device,
-            );
+        let swapchain_data = SwapchainData::new(
+            window,
+            &entry,
+            &instance,
+            &physical_device,
+            &[qfamindices],
+            &device,
+        );
 
         let frame_data = [FrameData::new(&device), FrameData::new(&device)];
 
@@ -247,6 +198,15 @@ impl VkRenderer {
 
         let allocator = unsafe { vk_mem::Allocator::new(alloc_create_info) }.unwrap();
 
+        let win_size = window.get_size();
+        let draw_extent = vk::Extent2D {
+            height: win_size.1 as u32,
+            width: win_size.0 as u32,
+        };
+
+        let draw_image =
+            AllocatedImage::new((draw_extent.width, draw_extent.height), &allocator, &device);
+
         Ok(Self {
             entry,
             instance,
@@ -255,180 +215,52 @@ impl VkRenderer {
             qfamindices,
             #[cfg(feature = "debug")]
             debug_utils,
-            image_views,
-            swapchain,
-            surface_loader,
-            surface,
-            swapchain_device,
+            swapchain_data,
             frame_data,
             frame_count: 0,
             allocator,
+            draw_extent,
+            draw_image,
 
             queue,
+            del_queue: DelQueue::new(),
         })
     }
 
-    fn create_swapchain(
-        window: &minifb::Window,
-        entry: &ash::Entry,
-        instance: &ash::Instance,
-        physical_device: &vk::PhysicalDevice,
-        queuefamilies: &[u32],
-        device: &ash::Device,
-    ) -> (
-        Vec<vk::ImageView>,
-        ash::khr::swapchain::Device,
-        vk::SwapchainKHR,
-        ash::khr::surface::Instance,
-        vk::SurfaceKHR,
-    ) {
-        let surface = match std::env::consts::OS {
-            "linux" => {
-                let surface = match window.window_handle().unwrap().as_raw() {
-                    RawWindowHandle::Wayland(h) => h.surface,
-                    _ => unreachable!(),
-                };
-                let display = match window.display_handle().unwrap().as_raw() {
-                    RawDisplayHandle::Wayland(h) => h.display,
-                    _ => unreachable!(),
-                };
-                let surface_create_info = vk::WaylandSurfaceCreateInfoKHR::default()
-                    .display(display.as_ptr())
-                    .surface(surface.as_ptr());
-
-                let wayland_surface_loader =
-                    ash::khr::wayland_surface::Instance::new(&entry, &instance);
-                unsafe { wayland_surface_loader.create_wayland_surface(&surface_create_info, None) }
-                    .unwrap()
-            }
-            "windows" => {
-                let (hwnd, hinstance) = match window.window_handle().unwrap().as_raw() {
-                    RawWindowHandle::Win32(h) => (h.hwnd, h.hinstance),
-                    _ => unreachable!(),
-                };
-
-                let surface_create_info = vk::Win32SurfaceCreateInfoKHR::default()
-                    .hinstance(hinstance.unwrap().into())
-                    .hwnd(hwnd.into());
-
-                let win_surface_loader = ash::khr::win32_surface::Instance::new(&entry, &instance);
-                unsafe { win_surface_loader.create_win32_surface(&surface_create_info, None) }
-                    .unwrap()
-            }
-            _ => unreachable!("This isn't meant to be run on this operating system"),
-        };
-
-        let surface_loader = ash::khr::surface::Instance::new(&entry, &instance);
-
-        let surface_capabilities = unsafe {
-            surface_loader.get_physical_device_surface_capabilities(*physical_device, surface)
-        }
-        .unwrap();
-
-        let surface_formats = unsafe {
-            surface_loader.get_physical_device_surface_formats(*physical_device, surface)
-        };
-
-        let image_format = &surface_formats
-            .unwrap()
-            .into_iter()
-            .find(|format| format.format == vk::Format::B8G8R8A8_UNORM)
-            .unwrap();
-
-        let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
-            .surface(surface)
-            .min_image_count(
-                3.max(surface_capabilities.min_image_count)
-                    .min(surface_capabilities.max_image_count),
-            )
-            .image_format(image_format.format)
-            .image_color_space(image_format.color_space)
-            .image_extent(vk::Extent2D {
-                height: window.get_size().1 as u32,
-                width: window.get_size().0 as u32,
-            })
-            .image_array_layers(1)
-            .min_image_count(surface_capabilities.min_image_count)
-            .image_usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT)
-            .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .queue_family_indices(&queuefamilies)
-            .pre_transform(surface_capabilities.current_transform)
-            .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-            .present_mode(vk::PresentModeKHR::MAILBOX);
-        let swapchain_device = ash::khr::swapchain::Device::new(&instance, &device);
-        let swapchain = unsafe {
-            swapchain_device
-                .create_swapchain(&swapchain_create_info, None)
-                .unwrap()
-        };
-
-        let swapchain_images = unsafe { swapchain_device.get_swapchain_images(swapchain).unwrap() };
-
-        let mut image_views = Vec::with_capacity(swapchain_images.len());
-        for image in &swapchain_images {
-            let subresource_range = vk::ImageSubresourceRange::default()
-                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                .base_mip_level(0)
-                .level_count(1)
-                .base_array_layer(0)
-                .layer_count(1);
-            let imageview_create_info = vk::ImageViewCreateInfo::default()
-                .image(*image)
-                .view_type(vk::ImageViewType::TYPE_2D)
-                .format(vk::Format::B8G8R8A8_UNORM)
-                .subresource_range(subresource_range);
-            let imageview =
-                unsafe { device.create_image_view(&imageview_create_info, None) }.unwrap();
-            image_views.push(imageview);
-        }
-
-        (
-            image_views,
-            swapchain_device,
-            swapchain,
-            surface_loader,
-            surface,
+    fn resize(&mut self, window: &minifb::Window) {
+        self.swapchain_data.flush(&self.device);
+        self.swapchain_data = SwapchainData::new(
+            window,
+            &self.entry,
+            &self.instance,
+            &self.physical_device,
+            &[self.qfamindices],
+            &self.device,
         )
     }
 
-    pub fn resize(&mut self, window: &minifb::Window) {
-        let (image_views, swapchain_device, swapchain, surface_loader, surface) =
-            Self::create_swapchain(
-                window,
-                &self.entry,
-                &self.instance,
-                &self.physical_device,
-                &[self.qfamindices],
-                &self.device,
-            );
-        unsafe {
-            for iv in &self.image_views {
-                self.device.destroy_image_view(*iv, None);
-            }
-            self.swapchain_device
-                .destroy_swapchain(self.swapchain, None);
-            self.surface_loader.destroy_surface(self.surface, None);
+    pub fn render(&mut self, resized: bool, window: &minifb::Window, window_size: (f32, f32)) {
+        if resized {
+            self.resize(window);
         }
-        self.image_views = image_views;
-        self.swapchain = swapchain;
-        self.swapchain_device = swapchain_device;
-        self.surface_loader = surface_loader;
-        self.surface = surface;
-    }
 
-    pub fn render(&mut self, resized: bool, window_size: (f32, f32)) {
         let fence = self.get_current_framedata().render_fence;
         unsafe { self.device.wait_for_fences(&[fence], true, 1000000000) }.unwrap();
         unsafe { self.device.reset_fences(&[fence]) }.unwrap();
         let cmd_buf = self.get_current_framedata().buf;
 
-        let swapchain_images =
-            unsafe { self.swapchain_device.get_swapchain_images(self.swapchain) }.unwrap();
+        let swapchain_images = unsafe {
+            self.swapchain_data
+                .swapchain_device
+                .get_swapchain_images(self.swapchain_data.swapchain)
+        }
+        .unwrap();
 
         let next_img = unsafe {
-            self.swapchain_device
+            self.swapchain_data
+                .swapchain_device
                 .acquire_next_image(
-                    self.swapchain,
+                    self.swapchain_data.swapchain,
                     1000000000,
                     self.get_current_framedata().swapchain_semaphore,
                     vk::Fence::null(),
@@ -461,11 +293,11 @@ impl VkRenderer {
                     cmd_buf,
                     0,
                     &[vk::Viewport {
-                        width: window_size.0 as f32,
-                        height: window_size.1 as f32,
+                        width: window_size.0,
+                        height: window_size.1,
                         ..Default::default()
                     }],
-                )
+                );
             };
             unsafe {
                 self.device.cmd_set_scissor(
@@ -477,7 +309,7 @@ impl VkRenderer {
                             width: window_size.0 as u32,
                         })
                         .offset(vk::Offset2D { x: 0, y: 0 })],
-                )
+                );
             };
         }
 
@@ -487,7 +319,6 @@ impl VkRenderer {
             .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
             .dst_access_mask(vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ)
             .old_layout(vk::ImageLayout::UNDEFINED)
-            // TODO: Change to optimize this
             .new_layout(vk::ImageLayout::GENERAL)
             .subresource_range(
                 vk::ImageSubresourceRange::default()
@@ -518,7 +349,7 @@ impl VkRenderer {
                     .level_count(vk::REMAINING_MIP_LEVELS)
                     .layer_count(vk::REMAINING_ARRAY_LAYERS)
                     .aspect_mask(vk::ImageAspectFlags::COLOR)],
-            )
+            );
         };
 
         let image_barrier = vk::ImageMemoryBarrier2::default()
@@ -566,10 +397,10 @@ impl VkRenderer {
         .unwrap();
 
         unsafe {
-            self.swapchain_device.queue_present(
+            self.swapchain_data.swapchain_device.queue_present(
                 self.queue,
                 &vk::PresentInfoKHR::default()
-                    .swapchains(&[self.swapchain])
+                    .swapchains(&[self.swapchain_data.swapchain])
                     .wait_semaphores(&[self.get_current_framedata().render_semaphore])
                     .image_indices(&[next_img.0]),
             )
@@ -580,16 +411,13 @@ impl VkRenderer {
     }
 }
 
-impl Drop for VkRenderer {
+impl Drop for RenderEngine {
     fn drop(&mut self) {
         unsafe {
+            self.del_queue.flush(&self.device, &self.allocator);
+
             self.device.device_wait_idle().unwrap();
-            for iv in &self.image_views {
-                self.device.destroy_image_view(*iv, None);
-            }
-            self.swapchain_device
-                .destroy_swapchain(self.swapchain, None);
-            self.surface_loader.destroy_surface(self.surface, None);
+            self.swapchain_data.flush(&self.device);
 
             #[cfg(feature = "debug")]
             self.debug_utils
