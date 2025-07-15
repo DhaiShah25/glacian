@@ -5,7 +5,6 @@ use vk_mem::Alloc;
 pub struct FrameData {
     pub render_fence: vk::Fence,
     pub swapchain_semaphore: vk::Semaphore,
-    pub render_semaphore: vk::Semaphore,
     pub pool: vk::CommandPool,
     pub buf: vk::CommandBuffer,
 }
@@ -43,102 +42,70 @@ impl FrameData {
         .unwrap();
         let swapchain_semaphore =
             unsafe { device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None) }.unwrap();
-        let render_semaphore =
-            unsafe { device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None) }.unwrap();
 
         Self {
             render_fence,
             swapchain_semaphore,
-            render_semaphore,
             pool,
             buf,
         }
     }
 }
 
+#[derive(Debug)]
 pub struct AllocatedImage {
-    image: vk::Image,
-    view: vk::ImageView,
-    allocation: vk_mem::Allocation,
-    extent: vk::Extent3D,
-    format: vk::Format,
+    pub image: vk::Image,
+    pub view: vk::ImageView,
+    pub allocation: vk_mem::Allocation,
+    pub extent: vk::Extent3D,
+    pub format: vk::Format,
 }
 
 impl AllocatedImage {
     pub fn new(
-        dimensions: (u32, u32),
+        format: vk::Format,
+        usage_flags: vk::ImageUsageFlags,
+        extent: vk::Extent3D,
+        aspect_flags: vk::ImageAspectFlags,
         allocator: &vk_mem::Allocator,
         device: &ash::Device,
     ) -> Self {
-        let extent = vk::Extent3D {
-            width: dimensions.0,
-            height: dimensions.1,
-            depth: 1,
-        };
+        let img_create_info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(format)
+            .extent(extent)
+            .mip_levels(1)
+            .array_layers(1)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .usage(usage_flags);
 
-        /* VkImageCreateInfo vkinit::image_create_info(VkFormat format, VkImageUsageFlags usageFlags, VkExtent3D extent)
-        {
-            VkImageCreateInfo info = {};
-            info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-            info.pNext = nullptr;
-
-            info.imageType = VK_IMAGE_TYPE_2D;
-
-            info.format = format;
-            info.extent = extent;
-
-            info.mipLevels = 1;
-            info.arrayLayers = 1;
-
-            //for MSAA. we will not be using it by default, so default it to 1 sample per pixel.
-            info.samples = VK_SAMPLE_COUNT_1_BIT;
-
-            //optimal tiling, which means the image is stored on the best gpu format
-            info.tiling = VK_IMAGE_TILING_OPTIMAL;
-            info.usage = usageFlags;
-
-            return info;
-        }
-
-        VkImageViewCreateInfo vkinit::imageview_create_info(VkFormat format, VkImage image, VkImageAspectFlags aspectFlags)
-        {
-            // build a image-view for the depth image to use for rendering
-            VkImageViewCreateInfo info = {};
-            info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-            info.pNext = nullptr;
-
-            info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-            info.image = image;
-            info.format = format;
-            info.subresourceRange.baseMipLevel = 0;
-            info.subresourceRange.levelCount = 1;
-            info.subresourceRange.baseArrayLayer = 0;
-            info.subresourceRange.layerCount = 1;
-            info.subresourceRange.aspectMask = aspectFlags;
-
-            return info;
-        }
-
-                 * */
         let (image, allocation) = unsafe {
             allocator.create_image(
-                &vk::ImageCreateInfo::default().format(vk::Format::R16G16B16_SFLOAT),
+                &img_create_info,
                 &vk_mem::AllocationCreateInfo {
                     usage: vk_mem::MemoryUsage::AutoPreferDevice,
-                    // required_flags: vk_mem::Memory,
-                    // preferred_flags: vk_mem::,
-                    // memory_type_bits: (),
-                    // user_data: (),
-                    // priority: (),
+                    required_flags: vk::MemoryPropertyFlags::DEVICE_LOCAL,
                     ..Default::default()
                 },
             )
         }
         .unwrap();
 
-        let view = vk::ImageView::default();
+        let img_view_create_info = vk::ImageViewCreateInfo::default()
+            .view_type(vk::ImageViewType::TYPE_2D)
+            .image(image)
+            .format(format)
+            .subresource_range(
+                vk::ImageSubresourceRange::default()
+                    .base_mip_level(0)
+                    .level_count(1)
+                    .base_array_layer(0)
+                    .layer_count(1)
+                    .aspect_mask(aspect_flags),
+            );
 
-        let format = vk::Format::R16G16B16_SFLOAT;
+        let view = unsafe { device.create_image_view(&img_view_create_info, None) }.unwrap();
 
         Self {
             image,
@@ -148,23 +115,129 @@ impl AllocatedImage {
             format,
         }
     }
-}
-
-pub struct DelQueue {
-    images: Vec<AllocatedImage>,
-}
-
-impl DelQueue {
-    pub fn new() -> Self {
-        Self { images: vec![] }
-    }
 
     pub fn flush(&mut self, device: &ash::Device, alloc: &vk_mem::Allocator) {
-        for i in 0..self.images.len() {
-            unsafe {
-                device.destroy_image(self.images[i].image, None);
-                alloc.destroy_image(self.images[i].image, &mut self.images[i].allocation);
-            }
+        unsafe {
+            alloc.destroy_image(self.image, &mut self.allocation);
+            device.destroy_image_view(self.view, None);
         }
+    }
+}
+
+pub struct DelQueue<'a> {
+    deletors: std::collections::VecDeque<Box<dyn FnOnce() + 'a>>,
+}
+
+impl<'a> DelQueue<'a> {
+    pub const fn new() -> Self {
+        Self {
+            deletors: std::collections::VecDeque::new(),
+        }
+    }
+
+    pub fn add(&mut self, func: Box<dyn FnOnce() + 'a>) {
+        self.deletors.push_back(func);
+    }
+
+    pub fn flush(&mut self) {
+        for del in self.deletors.drain(..).rev() {
+            del()
+        }
+    }
+}
+
+pub struct DescriptorLayoutBuilder<'a> {
+    bindings: Vec<vk::DescriptorSetLayoutBinding<'a>>,
+}
+
+impl<'a> DescriptorLayoutBuilder<'a> {
+    pub const fn new() -> Self {
+        Self { bindings: vec![] }
+    }
+
+    pub fn add_binding(&mut self, binding: u32, descriptor_type: vk::DescriptorType) {
+        self.bindings.push(
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(binding)
+                .descriptor_count(1)
+                .descriptor_type(descriptor_type),
+        );
+    }
+
+    pub fn clear(&mut self) {
+        self.bindings.clear();
+    }
+
+    pub fn build(
+        &mut self,
+        device: &ash::Device,
+        shader_stages: vk::ShaderStageFlags,
+        flags: vk::DescriptorSetLayoutCreateFlags,
+    ) -> vk::DescriptorSetLayout {
+        self.bindings
+            .iter_mut()
+            .for_each(|binding| binding.stage_flags |= shader_stages);
+
+        let info = vk::DescriptorSetLayoutCreateInfo::default()
+            .bindings(&self.bindings)
+            .flags(flags);
+
+        unsafe { device.create_descriptor_set_layout(&info, None) }.unwrap()
+    }
+}
+
+pub struct DescriptorAllocator {
+    pool: vk::DescriptorPool,
+}
+
+impl DescriptorAllocator {
+    pub fn new(
+        device: &ash::Device,
+        max_sets: u32,
+        pool_ratios: &[(vk::DescriptorType, u32)],
+    ) -> Self {
+        let pool_sizes: Vec<vk::DescriptorPoolSize> = pool_ratios
+            .iter()
+            .map(|ratio| {
+                vk::DescriptorPoolSize::default()
+                    .descriptor_count(ratio.1 * max_sets)
+                    .ty(ratio.0)
+            })
+            .collect();
+
+        let pool_info = vk::DescriptorPoolCreateInfo::default()
+            .max_sets(max_sets)
+            .pool_sizes(&pool_sizes);
+
+        Self {
+            pool: unsafe { device.create_descriptor_pool(&pool_info, None) }.unwrap(),
+        }
+    }
+
+    pub fn clear_descriptors(&mut self, device: &ash::Device) {
+        unsafe { device.reset_descriptor_pool(self.pool, vk::DescriptorPoolResetFlags::empty()) }
+            .unwrap();
+    }
+
+    pub fn flush(&mut self, device: &ash::Device) {
+        unsafe {
+            device.destroy_descriptor_pool(self.pool, None);
+        };
+    }
+
+    pub fn allocate(
+        &self,
+        device: &ash::Device,
+        layout: vk::DescriptorSetLayout,
+    ) -> vk::DescriptorSet {
+        let layout = [layout];
+        unsafe {
+            device.allocate_descriptor_sets(
+                &vk::DescriptorSetAllocateInfo::default()
+                    .descriptor_pool(self.pool)
+                    .set_layouts(&layout),
+            )
+        }
+        .unwrap()[0]
     }
 }

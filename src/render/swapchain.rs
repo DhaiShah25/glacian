@@ -6,11 +6,13 @@ pub struct SwapchainData {
     pub swapchain: vk::SwapchainKHR,
     pub surface_loader: ash::khr::surface::Instance,
     pub surface: vk::SurfaceKHR,
+    pub extent: vk::Extent2D,
+    pub render_semaphores: Vec<vk::Semaphore>,
 }
 
 impl SwapchainData {
     pub fn new(
-        window: &minifb::Window,
+        window: &glfw::Window,
         entry: &ash::Entry,
         instance: &ash::Instance,
         physical_device: &vk::PhysicalDevice,
@@ -73,6 +75,11 @@ impl SwapchainData {
             .find(|format| format.format == vk::Format::B8G8R8A8_UNORM)
             .unwrap();
 
+        let extent = vk::Extent2D {
+            height: window.get_size().1 as u32,
+            width: window.get_size().0 as u32,
+        };
+
         let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
             .surface(surface)
             .min_image_count(
@@ -81,10 +88,7 @@ impl SwapchainData {
             )
             .image_format(image_format.format)
             .image_color_space(image_format.color_space)
-            .image_extent(vk::Extent2D {
-                height: window.get_size().1 as u32,
-                width: window.get_size().0 as u32,
-            })
+            .image_extent(extent)
             .image_array_layers(1)
             .min_image_count(surface_capabilities.min_image_count)
             .image_usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT)
@@ -92,7 +96,7 @@ impl SwapchainData {
             .queue_family_indices(queuefamilies)
             .pre_transform(surface_capabilities.current_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-            .present_mode(vk::PresentModeKHR::MAILBOX);
+            .present_mode(vk::PresentModeKHR::FIFO);
         let swapchain_device = ash::khr::swapchain::Device::new(instance, device);
         let swapchain = unsafe {
             swapchain_device
@@ -103,6 +107,7 @@ impl SwapchainData {
         let swapchain_images = unsafe { swapchain_device.get_swapchain_images(swapchain).unwrap() };
 
         let mut image_views = Vec::with_capacity(swapchain_images.len());
+        let mut render_semaphores = Vec::with_capacity(swapchain_images.len());
         for image in &swapchain_images {
             let subresource_range = vk::ImageSubresourceRange::default()
                 .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -118,6 +123,10 @@ impl SwapchainData {
             let imageview =
                 unsafe { device.create_image_view(&imageview_create_info, None) }.unwrap();
             image_views.push(imageview);
+            let render_semaphore =
+                unsafe { device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None) }
+                    .unwrap();
+            render_semaphores.push(render_semaphore);
         }
 
         Self {
@@ -126,6 +135,8 @@ impl SwapchainData {
             swapchain,
             surface_loader,
             surface,
+            extent,
+            render_semaphores,
         }
     }
 
@@ -133,6 +144,9 @@ impl SwapchainData {
         unsafe {
             for iv in &self.image_views {
                 device.destroy_image_view(*iv, None);
+            }
+            for &semaphore in &self.render_semaphores {
+                device.destroy_semaphore(semaphore, None);
             }
             self.swapchain_device
                 .destroy_swapchain(self.swapchain, None);
