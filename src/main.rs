@@ -1,4 +1,4 @@
-use minifb::{Key, Window, WindowOptions};
+use glfw::{Action, Context, Key, WindowEvent};
 
 fn main() {
     tracing_subscriber::FmtSubscriber::builder()
@@ -6,32 +6,38 @@ fn main() {
         .without_time()
         .init();
 
-    let mut window = Window::new(
-        "Shadow Engine",
-        640,
-        360,
-        WindowOptions {
-            borderless: true,
-            resize: true,
-            ..Default::default()
-        },
-    )
-    .unwrap();
+    let mut glfw = glfw::init_no_callbacks().unwrap();
 
-    let mut r = glade::render::RenderEngine::new(&window).unwrap();
+    glfw.window_hint(glfw::WindowHint::ClientApi(glfw::ClientApiHint::NoApi));
 
-    window.set_target_fps(60);
+    let (mut window, events) = glfw
+        .create_window(640, 360, "Shadow Engine", glfw::WindowMode::Windowed)
+        .expect("Failed to create window");
 
-    let mut window_size = window.get_size();
+    window.make_current();
+    window.set_key_polling(true);
+    window.set_size_polling(true);
 
-    while window.is_open() && !window.is_key_down(Key::Escape) {
-        window.update();
+    let mut r = glade::render::RenderEngine::new(&window);
 
-        if window_size == window.get_size() {
-            r.render(false, &window, (window_size.0 as f32, window_size.1 as f32));
-        } else {
-            window_size = window.get_size();
-            r.render(true, &window, (window_size.0 as f32, window_size.1 as f32));
+    let mut resized = false;
+
+    while !window.should_close() {
+        window.swap_buffers();
+        glfw.poll_events();
+
+        for (_, event) in glfw::flush_messages(&events) {
+            println!("{event:?}");
+            match event {
+                WindowEvent::Key(Key::Escape, _, Action::Press, _) => window.set_should_close(true),
+                WindowEvent::Size(w, h) => {
+                    r.resize(&window, w as u32, h as u32);
+                    resized = !resized;
+                }
+                _ => {}
+            }
         }
+
+        r.render(resized);
     }
 }
