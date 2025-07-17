@@ -4,10 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-ash = { version = "0.38.0", default-features = false, features = ["linked", "debug", "std"] }
-bytemuck = "1.23.1"
-glam = "0.30.3"
+ash = "0.38.0"
+bytemuck = { version = "1.23.1", features = ["derive"] }
+glam = { version = "0.30.3", features = ["bytemuck"] }
 glfw = { version = "0.59.0", features = ["wayland", "log"] }
+gltf = "1.4.1"
 modular-bitfield = "0.12.0"
 noise = "0.9.0"
 raw-window-handle = "0.6.2"
@@ -24,4 +25,3 @@ panic = "abort"
 
 [features]
 debug = []
-profiling = []

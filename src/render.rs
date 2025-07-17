@@ -3,7 +3,10 @@ use std::io::Read;
 use tracing::{info, warn};
 
 mod utils;
-use utils::{AllocatedImage, DelQueue, DescriptorAllocator, DescriptorLayoutBuilder, FrameData};
+use utils::{
+    AllocatedImage, DelQueue, DescriptorAllocator, DescriptorLayoutBuilder, FrameData,
+    GPUDrawPushConstants, GPUMeshBuffers, Vertex,
+};
 mod swapchain;
 use swapchain::SwapchainData;
 mod debug;
@@ -41,6 +44,8 @@ pub struct RenderEngine<'a> {
 
     grapics_pipeline: vk::Pipeline,
     graphics_pipeline_layout: vk::PipelineLayout,
+
+    rectangle: GPUMeshBuffers,
 
     del_queue: utils::DelQueue<'a>,
 }
@@ -280,12 +285,7 @@ impl RenderEngine<'_> {
                         .name(c"main"),
                 );
 
-            let tmp_device = device.clone();
-            del_queue.add(Box::new(move || unsafe {
-                tmp_device.destroy_shader_module(comp_shader, None);
-            }));
-
-            unsafe {
+            let pipeline = unsafe {
                 device
                     .create_compute_pipelines(
                         vk::PipelineCache::null(),
@@ -293,22 +293,24 @@ impl RenderEngine<'_> {
                         None,
                     )
                     .unwrap()[0]
-            }
+            };
+
+            unsafe { device.destroy_shader_module(comp_shader, None) };
+
+            pipeline
         };
 
         let graphics_pipeline_layout = {
-            let info = vk::PipelineLayoutCreateInfo::default();
+            let push_range_contants = [vk::PushConstantRange::default()
+                .stage_flags(vk::ShaderStageFlags::VERTEX)
+                .size(size_of::<GPUDrawPushConstants>() as u32)];
+            let info =
+                vk::PipelineLayoutCreateInfo::default().push_constant_ranges(&push_range_contants);
             unsafe { device.create_pipeline_layout(&info, None) }.unwrap()
         };
         let grapics_pipeline = {
             let vert_shader = load_shader_module("./assets/shaders/vert.spv", &device);
             let frag_shader = load_shader_module("./assets/shaders/frag.spv", &device);
-
-            let tmp_device = device.clone();
-            del_queue.add(Box::new(move || unsafe {
-                tmp_device.destroy_shader_module(vert_shader, None);
-                tmp_device.destroy_shader_module(frag_shader, None);
-            }));
 
             let dynamic_state_info = vk::PipelineDynamicStateCreateInfo::default()
                 .dynamic_states(&[vk::DynamicState::SCISSOR, vk::DynamicState::VIEWPORT]);
@@ -317,8 +319,8 @@ impl RenderEngine<'_> {
                 .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
 
             let rasterization_state_info = vk::PipelineRasterizationStateCreateInfo::default()
-                .cull_mode(vk::CullModeFlags::BACK)
-                .front_face(vk::FrontFace::CLOCKWISE)
+                .cull_mode(vk::CullModeFlags::NONE)
+                .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
                 .line_width(1.)
                 .polygon_mode(vk::PolygonMode::FILL);
 
@@ -385,12 +387,48 @@ impl RenderEngine<'_> {
                 .layout(graphics_pipeline_layout);
 
             let create_infos = [info];
-            unsafe {
+            let pipeline = unsafe {
                 device
                     .create_graphics_pipelines(vk::PipelineCache::null(), &create_infos, None)
                     .expect("Failed to create graphics pipeline")[0]
+            };
+
+            unsafe {
+                device.destroy_shader_module(vert_shader, None);
+                device.destroy_shader_module(frag_shader, None);
             }
+
+            pipeline
         };
+
+        let rectangle = GPUMeshBuffers::new(
+            &[0, 1, 2, 2, 1, 3],
+            &[
+                Vertex {
+                    position: glam::vec3(0.5, -0.5, 0.),
+                    color: glam::vec4(0., 0., 0., 1.),
+                    ..Default::default()
+                },
+                Vertex {
+                    position: glam::vec3(0.5, 0.5, 0.),
+                    color: glam::vec4(0.5, 0.5, 0.5, 1.),
+                    ..Default::default()
+                },
+                Vertex {
+                    position: glam::vec3(-0.5, -0.5, 0.),
+                    color: glam::vec4(1., 0., 0., 1.),
+                    ..Default::default()
+                },
+                Vertex {
+                    position: glam::vec3(-0.5, 0.5, 0.),
+                    color: glam::vec4(0., 1., 0., 1.),
+                    ..Default::default()
+                },
+            ],
+            &allocator,
+            &device,
+            &queue,
+        );
 
         Self {
             entry,
@@ -417,6 +455,8 @@ impl RenderEngine<'_> {
 
             grapics_pipeline,
             graphics_pipeline_layout,
+
+            rectangle,
 
             queue,
             del_queue,
@@ -549,12 +589,30 @@ impl RenderEngine<'_> {
                     .offset(vk::Offset2D { x: 0, y: 0 })],
             );
 
-            self.device.cmd_draw(cmd, 3, 1, 0, 0);
+            let constants = GPUDrawPushConstants {
+                world_matrix: glam::Mat4::IDENTITY,
+                vertex_buffer: self.rectangle.vertex_buffer_address,
+            };
+
+            self.device.cmd_push_constants(
+                cmd,
+                self.graphics_pipeline_layout,
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                bytemuck::bytes_of(&constants),
+            );
+            self.device.cmd_bind_index_buffer(
+                cmd,
+                self.rectangle.index_buffer.buf,
+                0,
+                vk::IndexType::UINT32,
+            );
+            self.device.cmd_draw_indexed(cmd, 6, 1, 0, 0, 0);
             self.device.cmd_end_rendering(cmd);
         }
     }
 
-    pub fn render(&mut self, resized: bool) {
+    pub fn render(&mut self) {
         let fence = self.get_current_framedata().render_fence;
         unsafe { self.device.wait_for_fences(&[fence], true, 1_000_000_000) }.unwrap();
         unsafe { self.device.reset_fences(&[fence]) }.unwrap();
@@ -694,6 +752,13 @@ impl Drop for RenderEngine<'_> {
     fn drop(&mut self) {
         unsafe {
             self.device.device_wait_idle().unwrap();
+
+            self.rectangle
+                .index_buffer
+                .flush(self.allocator.as_ref().unwrap());
+            self.rectangle
+                .vertex_buffer
+                .flush(self.allocator.as_ref().unwrap());
 
             self.descriptor_allocator.flush(&self.device);
             self.device
