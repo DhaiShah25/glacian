@@ -415,3 +415,27 @@ pub struct GPUDrawPushConstants {
     pub world_matrix: glam::Mat4,
     pub vertex_buffer: vk::DeviceAddress,
 }
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, bytemuck::Zeroable, bytemuck::Pod)]
+pub struct SkyPushConstants {
+    time_of_day_yaw: u32,
+    pitch_and_padding: u32,
+}
+
+impl SkyPushConstants {
+    pub fn new(time_of_day: u16, yaw: u16, pitch: u8) -> Self {
+        // Pack time_of_day_u16 into the lower 16 bits and yaw_u16 into the upper 16 bits
+        let time_of_day_yaw_packed = (time_of_day as u32) | ((yaw as u32) << 16);
+
+        // Pitch is a single u8. Place it in the lowest byte of a u32.
+        // The remaining bytes of `pitch_and_padding` implicitly become padding,
+        // ensuring 4-byte alignment for this member.
+        let pitch_and_padding_packed = pitch as u32;
+
+        Self {
+            time_of_day_yaw: time_of_day_yaw_packed,
+            pitch_and_padding: pitch_and_padding_packed,
+        }
+    }
+}

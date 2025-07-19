@@ -5,7 +5,7 @@ use tracing::{info, warn};
 mod utils;
 use utils::{
     AllocatedImage, DelQueue, DescriptorAllocator, DescriptorLayoutBuilder, FrameData,
-    GPUDrawPushConstants, GPUMeshBuffers, Vertex,
+    GPUDrawPushConstants, GPUMeshBuffers, SkyPushConstants, Vertex,
 };
 mod swapchain;
 use swapchain::SwapchainData;
@@ -269,13 +269,19 @@ impl RenderEngine<'_> {
         unsafe { device.update_descriptor_sets(&[draw_image_write], &[]) };
 
         let comp_pipeline_layout = {
+            let push_range_contants = [vk::PushConstantRange::default()
+                .stage_flags(vk::ShaderStageFlags::COMPUTE)
+                .size(size_of::<SkyPushConstants>() as u32)];
+
             let tmp = [draw_image_descriptor_layout];
-            let compute_layout = vk::PipelineLayoutCreateInfo::default().set_layouts(&tmp);
+            let compute_layout = vk::PipelineLayoutCreateInfo::default()
+                .set_layouts(&tmp)
+                .push_constant_ranges(&push_range_contants);
 
             unsafe { device.create_pipeline_layout(&compute_layout, None) }.unwrap()
         };
         let comp_pipeline = {
-            let comp_shader = load_shader_module("./assets/shaders/gradient.spv", &device);
+            let comp_shader = load_shader_module("./assets/shaders/sky.spv", &device);
             let comp_pipeline_create_info = vk::ComputePipelineCreateInfo::default()
                 .layout(comp_pipeline_layout)
                 .stage(
@@ -506,7 +512,7 @@ impl RenderEngine<'_> {
         unsafe { self.device.update_descriptor_sets(&[draw_image_write], &[]) };
     }
 
-    fn draw_background(&self, cmd: vk::CommandBuffer) {
+    fn draw_background(&self, cmd: vk::CommandBuffer, dir: (super::Yaw, super::Pitch), time: u16) {
         unsafe {
             self.device.cmd_clear_color_image(
                 cmd,
@@ -530,6 +536,17 @@ impl RenderEngine<'_> {
                 &[self.draw_image_descriptors],
                 &[],
             );
+
+            let constants = SkyPushConstants::new(time, dir.0.0 as u16, dir.1.0 as u8);
+
+            self.device.cmd_push_constants(
+                cmd,
+                self.comp_pipeline_layout,
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                bytemuck::bytes_of(&constants),
+            );
+
             self.device.cmd_dispatch(
                 cmd,
                 (self.draw_extent.width as f32 / 16.).ceil() as u32,
@@ -612,7 +629,7 @@ impl RenderEngine<'_> {
         }
     }
 
-    pub fn render(&mut self) {
+    pub fn render(&mut self, dir: (super::Yaw, super::Pitch), time: u16) {
         let fence = self.get_current_framedata().render_fence;
         unsafe { self.device.wait_for_fences(&[fence], true, 1_000_000_000) }.unwrap();
         unsafe { self.device.reset_fences(&[fence]) }.unwrap();
@@ -667,7 +684,7 @@ impl RenderEngine<'_> {
             &self.device,
         );
 
-        self.draw_background(cmd_buf);
+        self.draw_background(cmd_buf, dir, time);
 
         transition_image(
             cmd_buf,
