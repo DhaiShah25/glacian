@@ -1,5 +1,5 @@
 use ash::vk;
-use tracing::{error, info, trace, warn};
+use log::{error, info, trace, warn};
 
 pub unsafe extern "system" fn callback(
     severity: vk::DebugUtilsMessageSeverityFlagsEXT,

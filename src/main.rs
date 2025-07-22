@@ -1,10 +1,7 @@
 use glfw::{Action, Context, Key, WindowEvent};
 
 fn main() {
-    tracing_subscriber::FmtSubscriber::builder()
-        .pretty()
-        .without_time()
-        .init();
+    pretty_env_logger::init();
 
     let mut glfw = glfw::init_no_callbacks().unwrap();
 
@@ -74,6 +71,5 @@ fn main() {
         r.render((view_dir.yaw, view_dir.pitch), time);
 
         time = time.wrapping_add(5);
-        dbg!(time);
     }
 }

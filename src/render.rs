@@ -1,6 +1,6 @@
 use ash::vk;
+use log::{info, warn};
 use std::io::Read;
-use tracing::{info, warn};
 
 mod utils;
 use utils::{
