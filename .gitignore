@@ -1,2 +1,4 @@
 /target
-/vk
+*.spv
+*.wgsl
+.direnv
