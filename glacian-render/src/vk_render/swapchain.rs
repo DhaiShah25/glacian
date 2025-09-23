@@ -12,51 +12,14 @@ pub struct SwapchainData {
 
 impl SwapchainData {
     pub fn new(
-        window: &glfw::Window,
+        window: &sdl3::video::Window,
         entry: &ash::Entry,
         instance: &ash::Instance,
         physical_device: &vk::PhysicalDevice,
         queuefamilies: &[u32],
         device: &ash::Device,
     ) -> Self {
-        use raw_window_handle::{
-            HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle,
-        };
-        let surface = match std::env::consts::OS {
-            "linux" => {
-                let surface = match window.window_handle().unwrap().as_raw() {
-                    RawWindowHandle::Wayland(h) => h.surface,
-                    _ => unreachable!(),
-                };
-                let display = match window.display_handle().unwrap().as_raw() {
-                    RawDisplayHandle::Wayland(h) => h.display,
-                    _ => unreachable!(),
-                };
-                let surface_create_info = vk::WaylandSurfaceCreateInfoKHR::default()
-                    .display(display.as_ptr())
-                    .surface(surface.as_ptr());
-
-                let wayland_surface_loader =
-                    ash::khr::wayland_surface::Instance::new(entry, instance);
-                unsafe { wayland_surface_loader.create_wayland_surface(&surface_create_info, None) }
-                    .unwrap()
-            }
-            "windows" => {
-                let (hwnd, hinstance) = match window.window_handle().unwrap().as_raw() {
-                    RawWindowHandle::Win32(h) => (h.hwnd, h.hinstance),
-                    _ => unreachable!(),
-                };
-
-                let surface_create_info = vk::Win32SurfaceCreateInfoKHR::default()
-                    .hinstance(hinstance.unwrap().into())
-                    .hwnd(hwnd.into());
-
-                let win_surface_loader = ash::khr::win32_surface::Instance::new(entry, instance);
-                unsafe { win_surface_loader.create_win32_surface(&surface_create_info, None) }
-                    .unwrap()
-            }
-            _ => unreachable!("This isn't meant to be run on this operating system"),
-        };
+        let surface = window.vulkan_create_surface(instance.handle()).unwrap();
 
         let surface_loader = ash::khr::surface::Instance::new(entry, instance);
 
@@ -76,8 +39,8 @@ impl SwapchainData {
             .unwrap();
 
         let extent = vk::Extent2D {
-            height: window.get_size().1 as u32,
-            width: window.get_size().0 as u32,
+            height: window.size().1,
+            width: window.size().0,
         };
 
         let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
@@ -151,6 +114,57 @@ impl SwapchainData {
             self.swapchain_device
                 .destroy_swapchain(self.swapchain, None);
             self.surface_loader.destroy_surface(self.surface, None);
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct FrameData {
+    pub render_fence: vk::Fence,
+    pub swapchain_semaphore: vk::Semaphore,
+    pub pool: vk::CommandPool,
+    pub buf: vk::CommandBuffer,
+}
+
+impl FrameData {
+    pub fn new(device: &ash::Device) -> Self {
+        let pool = unsafe {
+            device.create_command_pool(
+                &vk::CommandPoolCreateInfo::default()
+                    .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
+                None,
+            )
+        }
+        .unwrap();
+        let cmd_bufs = unsafe {
+            device.allocate_command_buffers(
+                &vk::CommandBufferAllocateInfo::default()
+                    .command_pool(pool)
+                    .level(vk::CommandBufferLevel::PRIMARY)
+                    .command_buffer_count(1),
+            )
+        }
+        .unwrap();
+
+        let buf = cmd_bufs
+            .first()
+            .map_or_else(|| panic!("Unable to allocate command buffers"), |s| *s);
+
+        let render_fence = unsafe {
+            device.create_fence(
+                &vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED),
+                None,
+            )
+        }
+        .unwrap();
+        let swapchain_semaphore =
+            unsafe { device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None) }.unwrap();
+
+        Self {
+            render_fence,
+            swapchain_semaphore,
+            pool,
+            buf,
         }
     }
 }

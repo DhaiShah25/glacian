@@ -1,5 +1,5 @@
 use ash::vk;
-use log::{error, info, trace, warn};
+use tracing::{error, info, trace, warn};
 
 pub unsafe extern "system" fn callback(
     severity: vk::DebugUtilsMessageSeverityFlagsEXT,
@@ -22,4 +22,28 @@ pub unsafe extern "system" fn callback(
     }
 
     vk::FALSE
+}
+
+pub struct DebugUtils {
+    instance: ash::ext::debug_utils::Instance,
+    messenger: ash::vk::DebugUtilsMessengerEXT,
+}
+
+impl DebugUtils {
+    pub fn new(
+        instance: ash::ext::debug_utils::Instance,
+        messenger: ash::vk::DebugUtilsMessengerEXT,
+    ) -> Self {
+        Self {
+            instance,
+            messenger,
+        }
+    }
+
+    pub fn destroy(&mut self) {
+        unsafe {
+            self.instance
+                .destroy_debug_utils_messenger(self.messenger, None)
+        };
+    }
 }
