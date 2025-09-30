@@ -16,8 +16,8 @@ impl GPUMeshBuffers {
         device: &ash::Device,
         transfer_queue: &vk::Queue,
     ) -> Self {
-        let vertex_buffer_size = (vertices.len() * size_of::<V>()) as u64;
-        let index_buffer_size = (indices.len() * size_of::<u32>()) as u64;
+        let vertex_buffer_size = std::mem::size_of_val(vertices) as u64;
+        let index_buffer_size = std::mem::size_of_val(indices) as u64;
         let total_size = vertex_buffer_size + index_buffer_size;
 
         let vertex_buffer = AllocatedBuffer::new(
@@ -48,7 +48,7 @@ impl GPUMeshBuffers {
         let mem = unsafe { allocator.map_memory(&mut staging.allocation) }.unwrap();
 
         let data_slice: &mut [u8] =
-            unsafe { std::slice::from_raw_parts_mut(mem as *mut u8, total_size as usize) };
+            unsafe { std::slice::from_raw_parts_mut(mem, total_size as usize) };
 
         let vertex_bytes = bytemuck::cast_slice(vertices);
         data_slice[0..(vertex_buffer_size as usize)].copy_from_slice(vertex_bytes);

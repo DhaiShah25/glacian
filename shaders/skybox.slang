@@ -44,7 +44,7 @@ float4 fs_main(float4 position: SV_Position) : SV_Target {
 
     float sun_disk = smoothstep(0.99, 1.0, sun_intensity);
 
-    float3 final_color = lerp(pushConstants.sky_color, float3(1.0, 0.9, 0.7), sun_disk);
+    float3 final_color = lerp(pushConstants.sky_color, float3(0.9, 0.8, 0.7), sun_disk);
 
     return float4(final_color, 1.0);
 }

@@ -44,8 +44,8 @@ impl Data {
             unsafe { device.create_pipeline_layout(&info, None) }.unwrap()
         };
         let pipeline = {
-            let vert_shader = load_shader_module("./assets/shaders/skybox_vs.spv", &device);
-            let frag_shader = load_shader_module("./assets/shaders/skybox_fs.spv", &device);
+            let vert_shader = load_shader_module("./assets/shaders/skybox_vs.spv", device);
+            let frag_shader = load_shader_module("./assets/shaders/skybox_fs.spv", device);
 
             let dynamic_state_info = vk::PipelineDynamicStateCreateInfo::default()
                 .dynamic_states(&[vk::DynamicState::SCISSOR, vk::DynamicState::VIEWPORT]);
@@ -153,7 +153,7 @@ impl Data {
         let mem = unsafe { allocator.map_memory(&mut staging.allocation) }.unwrap();
 
         let data_slice: &mut [u8] =
-            unsafe { std::slice::from_raw_parts_mut(mem as *mut u8, 36 * size_of::<u16>()) };
+            unsafe { std::slice::from_raw_parts_mut(mem, 36 * size_of::<u16>()) };
 
         const indices: [u16; 36] = [
             // Front face (v0, v1, v2, v3)
@@ -177,7 +177,7 @@ impl Data {
         ];
 
         let index_bytes = bytemuck::cast_slice(&indices);
-        data_slice[0..36 * size_of::<u16>() as usize].copy_from_slice(index_bytes);
+        data_slice[0..36 * size_of::<u16>()].copy_from_slice(index_bytes);
 
         unsafe { allocator.unmap_memory(&mut staging.allocation) };
 

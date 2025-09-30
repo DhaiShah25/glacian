@@ -73,14 +73,12 @@ impl VkRenderer {
             .api_version(vk::make_api_version(0, 1, 3, 206))
             .application_name(c"Shadow Engine");
 
-        let extensions = dbg!(
-            window
-                .vulkan_instance_extensions()
-                .unwrap()
-                .into_iter()
-                .map(|s| CString::new(s).expect("String contained null bytes"))
-                .collect::<Vec<CString>>()
-        );
+        let extensions = window
+            .vulkan_instance_extensions()
+            .unwrap()
+            .into_iter()
+            .map(|s| CString::new(s).expect("String contained null bytes"))
+            .collect::<Vec<CString>>();
 
         let mut extension_names: Vec<*const i8> = extensions.iter().map(|cs| cs.as_ptr()).collect();
 
@@ -208,8 +206,8 @@ impl VkRenderer {
 
         let win_size = window.size();
         let draw_extent = vk::Extent2D {
-            height: win_size.1 as u32,
-            width: win_size.0 as u32,
+            height: win_size.1,
+            width: win_size.0,
         };
 
         let draw_image = AllocatedImage::new(
@@ -228,7 +226,6 @@ impl VkRenderer {
         );
 
         let sizes: Vec<(vk::DescriptorType, u32)> = (0..10)
-            .into_iter()
             .map(|_| (vk::DescriptorType::STORAGE_IMAGE, 1))
             .collect();
 
@@ -243,7 +240,7 @@ impl VkRenderer {
             )
         };
         let draw_image_descriptors =
-            descriptor_allocator.allocate(&device, draw_image_descriptor_layout.clone());
+            descriptor_allocator.allocate(&device, draw_image_descriptor_layout);
 
         let img_info = [vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::GENERAL)
@@ -311,7 +308,7 @@ impl VkRenderer {
 
         self.draw_extent = vk::Extent2D { height, width };
         self.draw_image
-            .flush(&self.device, &self.allocator.as_ref().unwrap());
+            .flush(&self.device, self.allocator.as_ref().unwrap());
         self.draw_image = AllocatedImage::new(
             vk::Format::R16G16B16A16_SFLOAT,
             vk::ImageUsageFlags::TRANSFER_SRC
@@ -323,7 +320,7 @@ impl VkRenderer {
                 .height(self.draw_extent.height)
                 .depth(1),
             vk::ImageAspectFlags::COLOR,
-            &self.allocator.as_ref().unwrap(),
+            self.allocator.as_ref().unwrap(),
             &self.device,
         );
 
@@ -398,6 +395,15 @@ impl VkRenderer {
             &self.device,
         );
 
+        let sky_view_mat = {
+            let mut tmp = view_mat;
+
+            tmp.col_mut(3).x = 0.0;
+            tmp.col_mut(3).y = 0.0;
+            tmp.col_mut(3).z = 0.0;
+            tmp
+        };
+
         self.skybox_data.draw(
             &self.device,
             cmd_buf,
@@ -408,9 +414,9 @@ impl VkRenderer {
                     std::f32::consts::FRAC_PI_3,
                     self.aspect_ratio,
                     2.,
-                ) * view_mat,
+                ) * sky_view_mat,
+                glam::vec3a(0.7, 0.7, 1.0),
                 sun_dir,
-                glam::vec3a(0.6, 0.6, 0.9),
             ),
         );
 
