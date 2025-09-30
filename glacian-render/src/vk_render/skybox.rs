@@ -155,7 +155,7 @@ impl Data {
         let data_slice: &mut [u8] =
             unsafe { std::slice::from_raw_parts_mut(mem, 36 * size_of::<u16>()) };
 
-        const indices: [u16; 36] = [
+        const INDICES: [u16; 36] = [
             // Front face (v0, v1, v2, v3)
             0, 1, 2, // First triangle
             0, 2, 3, // Second triangle
@@ -176,7 +176,7 @@ impl Data {
             4, 1, 0, // Second triangle
         ];
 
-        let index_bytes = bytemuck::cast_slice(&indices);
+        let index_bytes = bytemuck::cast_slice(&INDICES);
         data_slice[0..36 * size_of::<u16>()].copy_from_slice(index_bytes);
 
         unsafe { allocator.unmap_memory(&mut staging.allocation) };

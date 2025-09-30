@@ -1,6 +1,8 @@
 use sdl3::{event::Event, keyboard::Keycode};
 use std::time::Instant;
 
+const SENSITIVITY: f32 = std::f32::consts::PI / 512.;
+
 fn main() {
     tracing_subscriber::fmt().init();
 
@@ -18,9 +20,13 @@ fn main() {
         .build()
         .unwrap();
 
+    sdl_context.mouse().set_relative_mouse_mode(&window, true);
+
     let mut r = glacian_render::Renderer::new(&window);
 
     let mut player_pos = glam::vec3(0., 0., 0.);
+
+    let (mut yaw, mut pitch) = (0., std::f32::consts::PI);
 
     let start_time = Instant::now();
 
@@ -60,20 +66,50 @@ fn main() {
                     keycode: Some(Keycode::Down),
                     ..
                 } => player_pos.z += 1.,
+                Event::KeyDown {
+                    keycode: Some(Keycode::Escape),
+                    ..
+                } => {
+                    sdl_context.mouse().set_relative_mouse_mode(
+                        &window,
+                        !sdl_context.mouse().relative_mouse_mode(&window),
+                    );
+                }
                 // Event::KeyDown { .., keycode: Some(Keycode::A), scancode, keymod, repeat, which, raw } => (),
                 // Event::KeyUp { .., keycode, scancode, keymod, repeat, which, raw } => (),
+                Event::MouseMotion { xrel, yrel, .. } => {
+                    yaw += xrel * SENSITIVITY;
+                    pitch -= yrel * SENSITIVITY;
+                }
                 _ => (),
             }
         }
-        let view = glam::Mat4::look_to_rh(player_pos, glam::Vec3::X, glam::Vec3::Z);
+        let view = glam::Mat4::look_to_rh(
+            player_pos,
+            glam::vec3(pitch.cos() * yaw.cos(), yaw.sin(), yaw.sin() * pitch.cos()),
+            glam::Vec3::Z,
+        );
+
+        dbg!(view);
 
         let elapsed_time = start_time.elapsed().as_secs_f32();
 
-        let sun_dir_vector =
-            glam::vec3a(elapsed_time.sin() * 1.5, elapsed_time.cos() * 1.5, -0.5).normalize();
+        dbg!(yaw / std::f32::consts::PI, pitch / std::f32::consts::PI);
+
+        // --- REWRITTEN SUN_DIR CALCULATION ---
+
+        // This calculates a unit vector that rotates in the X-Y plane (the ground plane)
+        // with a fixed negative Z component to make it point slightly down.
+        let sun_dir_vector = glam::vec3a(
+            elapsed_time.cos(), // X component
+            elapsed_time.sin(), // Y component
+            0.5,                // Fixed Z component (downward angle)
+        )
+        .normalize();
+
+        // -------------------------------------
 
         r.render(view, sun_dir_vector);
-
         std::thread::sleep(std::time::Duration::from_millis(16));
     }
 }
