@@ -19,6 +19,7 @@ mod debug;
 use debug::DebugUtils;
 
 mod skybox;
+mod terrain;
 
 pub struct VkRenderer {
     pub entry: ash::Entry,
@@ -419,6 +420,8 @@ impl VkRenderer {
                 sun_dir,
             ),
         );
+
+        unsafe { self.device.cmd_end_rendering(cmd_buf) };
 
         transition_image(
             cmd_buf,

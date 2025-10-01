@@ -1,3 +1,5 @@
+pub mod terrain;
+
 #[cfg(feature = "vulkan")]
 mod vk_render;
 #[cfg(feature = "vulkan")]

@@ -33,6 +33,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
+name = "binary-greedy-meshing"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9947debe39fe74867d40056a15ebd86994310ccdb621ba938385cf2c3d2364e6"
+
+[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -272,8 +278,10 @@ name = "glacian-render"
 version = "0.1.0"
 dependencies = [
  "ash",
+ "binary-greedy-meshing",
  "bytemuck",
  "glam",
+ "modular-bitfield",
  "pollster",
  "sdl3",
  "tracing",

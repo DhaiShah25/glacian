@@ -297,7 +297,6 @@ impl Data {
             );
             device.cmd_bind_index_buffer(cmd, self.idx_buffer.buf, 0, vk::IndexType::UINT16);
             device.cmd_draw_indexed(cmd, 36, 1, 0, 0, 0);
-            device.cmd_end_rendering(cmd);
         }
     }
 
