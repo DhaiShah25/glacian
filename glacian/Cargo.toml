@@ -16,5 +16,5 @@ glacian-render = { path = "../glacian-render/", default-features = false, featur
   "vulkan",
   "debug",
 ] }
-sdl3 = "0.14.40"
 modular-bitfield = "0.12.0"
+sdl3 = "0.15.1"
