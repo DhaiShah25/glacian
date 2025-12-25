@@ -1,11 +1,11 @@
-use ash::vk;
-use vk_mem::Alloc;
+use vulkanalia::vk::{self, DeviceV1_0, HasBuilder};
+use vulkanalia_vma::Alloc;
 
 #[derive(Debug)]
 pub struct AllocatedImage {
     pub image: vk::Image,
     pub view: vk::ImageView,
-    pub allocation: vk_mem::Allocation,
+    pub allocation: vulkanalia_vma::Allocation,
     pub extent: vk::Extent3D,
     pub format: vk::Format,
 }
@@ -16,24 +16,24 @@ impl AllocatedImage {
         usage_flags: vk::ImageUsageFlags,
         extent: vk::Extent3D,
         aspect_flags: vk::ImageAspectFlags,
-        allocator: &vk_mem::Allocator,
-        device: &ash::Device,
+        allocator: &vulkanalia_vma::Allocator,
+        device: &vulkanalia::Device,
     ) -> Self {
-        let img_create_info = vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_2D)
+        let img_create_info = vk::ImageCreateInfo::builder()
+            .image_type(vk::ImageType::_2D)
             .format(format)
             .extent(extent)
             .mip_levels(1)
             .array_layers(1)
-            .samples(vk::SampleCountFlags::TYPE_1)
+            .samples(vk::SampleCountFlags::_1)
             .tiling(vk::ImageTiling::OPTIMAL)
             .usage(usage_flags);
 
         let (image, allocation) = unsafe {
             allocator.create_image(
-                &img_create_info,
-                &vk_mem::AllocationCreateInfo {
-                    usage: vk_mem::MemoryUsage::AutoPreferDevice,
+                img_create_info,
+                &vulkanalia_vma::AllocationOptions {
+                    usage: vulkanalia_vma::MemoryUsage::AutoPreferDevice,
                     required_flags: vk::MemoryPropertyFlags::DEVICE_LOCAL,
                     ..Default::default()
                 },
@@ -41,12 +41,12 @@ impl AllocatedImage {
         }
         .unwrap();
 
-        let img_view_create_info = vk::ImageViewCreateInfo::default()
-            .view_type(vk::ImageViewType::TYPE_2D)
+        let img_view_create_info = vk::ImageViewCreateInfo::builder()
+            .view_type(vk::ImageViewType::_2D)
             .image(image)
             .format(format)
             .subresource_range(
-                vk::ImageSubresourceRange::default()
+                vk::ImageSubresourceRange::builder()
                     .base_mip_level(0)
                     .level_count(1)
                     .base_array_layer(0)
@@ -65,9 +65,9 @@ impl AllocatedImage {
         }
     }
 
-    pub fn flush(&mut self, device: &ash::Device, alloc: &vk_mem::Allocator) {
+    pub fn flush(&mut self, device: &vulkanalia::Device, alloc: &vulkanalia_vma::Allocator) {
         unsafe {
-            alloc.destroy_image(self.image, &mut self.allocation);
+            alloc.destroy_image(self.image, self.allocation);
             device.destroy_image_view(self.view, None);
         }
     }
@@ -79,20 +79,20 @@ pub struct DescriptorAllocator {
 
 impl DescriptorAllocator {
     pub fn new(
-        device: &ash::Device,
+        device: &vulkanalia::Device,
         max_sets: u32,
         pool_ratios: &[(vk::DescriptorType, u32)],
     ) -> Self {
-        let pool_sizes: Vec<vk::DescriptorPoolSize> = pool_ratios
+        let pool_sizes: Vec<vk::DescriptorPoolSizeBuilder> = pool_ratios
             .iter()
             .map(|ratio| {
-                vk::DescriptorPoolSize::default()
+                vk::DescriptorPoolSize::builder()
                     .descriptor_count(ratio.1 * max_sets)
-                    .ty(ratio.0)
+                    .type_(ratio.0)
             })
             .collect();
 
-        let pool_info = vk::DescriptorPoolCreateInfo::default()
+        let pool_info = vk::DescriptorPoolCreateInfo::builder()
             .max_sets(max_sets)
             .pool_sizes(&pool_sizes);
 
@@ -101,12 +101,12 @@ impl DescriptorAllocator {
         }
     }
 
-    pub fn clear_descriptors(&mut self, device: &ash::Device) {
+    pub fn clear_descriptors(&mut self, device: &vulkanalia::Device) {
         unsafe { device.reset_descriptor_pool(self.pool, vk::DescriptorPoolResetFlags::empty()) }
             .unwrap();
     }
 
-    pub fn flush(&mut self, device: &ash::Device) {
+    pub fn flush(&mut self, device: &vulkanalia::Device) {
         unsafe {
             device.destroy_descriptor_pool(self.pool, None);
         };
@@ -114,13 +114,13 @@ impl DescriptorAllocator {
 
     pub fn allocate(
         &self,
-        device: &ash::Device,
+        device: &vulkanalia::Device,
         layout: vk::DescriptorSetLayout,
     ) -> vk::DescriptorSet {
         let layout = [layout];
         unsafe {
             device.allocate_descriptor_sets(
-                &vk::DescriptorSetAllocateInfo::default()
+                &vk::DescriptorSetAllocateInfo::builder()
                     .descriptor_pool(self.pool)
                     .set_layouts(&layout),
             )
@@ -131,31 +131,31 @@ impl DescriptorAllocator {
 
 pub struct AllocatedBuffer {
     pub buf: vk::Buffer,
-    pub allocation: vk_mem::Allocation,
+    pub allocation: vulkanalia_vma::Allocation,
 }
 
 impl AllocatedBuffer {
     pub fn new(
-        allocator: &vk_mem::Allocator,
+        allocator: &vulkanalia_vma::Allocator,
         size: u64,
         usage: vk::BufferUsageFlags,
-        memory_usage: vk_mem::MemoryUsage,
+        memory_usage: vulkanalia_vma::MemoryUsage,
     ) -> Self {
-        let info = vk::BufferCreateInfo::default().size(size).usage(usage);
-        let alloc_create_info = vk_mem::AllocationCreateInfo {
+        let info = vk::BufferCreateInfo::builder().size(size).usage(usage);
+        let alloc_create_info = vulkanalia_vma::AllocationOptions {
             usage: memory_usage,
-            flags: vk_mem::AllocationCreateFlags::MAPPED
-                | vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
+            flags: vulkanalia_vma::AllocationCreateFlags::MAPPED
+                | vulkanalia_vma::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE,
             ..Default::default()
         };
 
         let (buf, allocation) =
-            unsafe { allocator.create_buffer(&info, &alloc_create_info) }.unwrap();
+            unsafe { allocator.create_buffer(info, &alloc_create_info) }.unwrap();
 
         Self { buf, allocation }
     }
 
-    pub fn flush(&mut self, allocator: &vk_mem::Allocator) {
-        unsafe { allocator.destroy_buffer(self.buf, &mut self.allocation) };
+    pub fn flush(&mut self, allocator: &vulkanalia_vma::Allocator) {
+        unsafe { allocator.destroy_buffer(self.buf, self.allocation) };
     }
 }

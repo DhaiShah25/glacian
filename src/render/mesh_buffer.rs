@@ -1,6 +1,6 @@
-use crate::vk_render::allocations::AllocatedBuffer;
-use ash::vk;
+use crate::render::allocations::AllocatedBuffer;
 use bytemuck::NoUninit;
+use vulkanalia::vk::{self, DeviceV1_0, DeviceV1_2, DeviceV1_3, HasBuilder};
 
 pub struct GPUMeshBuffers {
     pub index_buffer: AllocatedBuffer,
@@ -12,8 +12,8 @@ impl GPUMeshBuffers {
     pub fn new<V: Sized + NoUninit>(
         indices: &[u32],
         vertices: &[V],
-        allocator: &vk_mem::Allocator,
-        device: &ash::Device,
+        allocator: &vulkanalia_vma::Allocator,
+        device: &vulkanalia::Device,
         transfer_queue: &vk::Queue,
     ) -> Self {
         let vertex_buffer_size = std::mem::size_of_val(vertices) as u64;
@@ -26,26 +26,26 @@ impl GPUMeshBuffers {
             vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::TRANSFER_DST
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            vk_mem::MemoryUsage::AutoPreferDevice,
+            vulkanalia_vma::MemoryUsage::AutoPreferDevice,
         );
 
-        let device_addr_info = vk::BufferDeviceAddressInfo::default().buffer(vertex_buffer.buf);
+        let device_addr_info = vk::BufferDeviceAddressInfo::builder().buffer(vertex_buffer.buf);
         let vertex_buffer_address = unsafe { device.get_buffer_device_address(&device_addr_info) };
 
         let index_buffer = AllocatedBuffer::new(
             allocator,
             index_buffer_size,
             vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
-            vk_mem::MemoryUsage::AutoPreferDevice,
+            vulkanalia_vma::MemoryUsage::AutoPreferDevice,
         );
         let mut staging = AllocatedBuffer::new(
             allocator,
             total_size,
             vk::BufferUsageFlags::TRANSFER_SRC,
-            vk_mem::MemoryUsage::AutoPreferHost,
+            vulkanalia_vma::MemoryUsage::AutoPreferHost,
         );
 
-        let mem = unsafe { allocator.map_memory(&mut staging.allocation) }.unwrap();
+        let mem = unsafe { allocator.map_memory(staging.allocation) }.unwrap();
 
         let data_slice: &mut [u8] =
             unsafe { std::slice::from_raw_parts_mut(mem, total_size as usize) };
@@ -56,18 +56,18 @@ impl GPUMeshBuffers {
         let index_bytes = bytemuck::cast_slice(indices);
         data_slice[(vertex_buffer_size as usize)..total_size as usize].copy_from_slice(index_bytes);
 
-        unsafe { allocator.unmap_memory(&mut staging.allocation) };
+        unsafe { allocator.unmap_memory(staging.allocation) };
 
         unsafe {
             let submit_fence = device
-                .create_fence(&vk::FenceCreateInfo::default(), None)
+                .create_fence(&vk::FenceCreateInfo::builder(), None)
                 .unwrap();
             let cmd_pool = device
                 .create_command_pool(&vk::CommandPoolCreateInfo::default(), None)
                 .unwrap();
             let cmd = device
                 .allocate_command_buffers(
-                    &vk::CommandBufferAllocateInfo::default()
+                    &vk::CommandBufferAllocateInfo::builder()
                         .command_pool(cmd_pool)
                         .level(vk::CommandBufferLevel::PRIMARY)
                         .command_buffer_count(1),
@@ -76,7 +76,7 @@ impl GPUMeshBuffers {
             device
                 .begin_command_buffer(
                     cmd,
-                    &vk::CommandBufferBeginInfo::default()
+                    &vk::CommandBufferBeginInfo::builder()
                         .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
                 )
                 .unwrap();
@@ -85,13 +85,13 @@ impl GPUMeshBuffers {
                 cmd,
                 staging.buf,
                 vertex_buffer.buf,
-                &[vk::BufferCopy::default().size(vertex_buffer_size)],
+                &[vk::BufferCopy::builder().size(vertex_buffer_size)],
             );
             device.cmd_copy_buffer(
                 cmd,
                 staging.buf,
                 index_buffer.buf,
-                &[vk::BufferCopy::default()
+                &[vk::BufferCopy::builder()
                     .size(index_buffer_size)
                     .src_offset(vertex_buffer_size)],
             );
@@ -101,8 +101,8 @@ impl GPUMeshBuffers {
             device
                 .queue_submit2(
                     *transfer_queue,
-                    &[vk::SubmitInfo2::default().command_buffer_infos(&[
-                        vk::CommandBufferSubmitInfo::default()
+                    &[vk::SubmitInfo2::builder().command_buffer_infos(&[
+                        vk::CommandBufferSubmitInfo::builder()
                             .command_buffer(cmd)
                             .device_mask(0),
                     ])],

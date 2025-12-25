@@ -7,7 +7,7 @@ struct PushConstants {
 [[vk::push_constant]]
 uniform PushConstants pushConstants;
 
-static float3 skybox_vertices[8] = {
+static const float3 skybox_vertices[8] = {
     float3(-1.0, -1.0, -1.0), // 0: v0
     float3( 1.0, -1.0, -1.0), // 1: v1
     float3( 1.0,  1.0, -1.0), // 2: v2
@@ -20,6 +20,7 @@ static float3 skybox_vertices[8] = {
 
 struct VSOutput {
     float4 position : SV_Position;
+    float3 view_dir: TEXCOORD0;
 };
 
 [shader("vertex")]
@@ -32,17 +33,18 @@ VSOutput vs_main(uint gl_VertexIndex : SV_VertexID) {
 
     result.position = float4(temp_pos.xyz, temp_pos.w);
     result.position.z = result.position.w;
+    result.view_dir = vertex_pos;
 
     return result;
 }
 
 [shader("fragment")]
-float4 fs_main(float4 position: SV_Position) : SV_Target {	
-    float3 view_dir = normalize(position.xyz);
+float4 fs_main(VSOutput input) : SV_Target {
+    float3 view_dir = input.view_dir;
 
     float sun_intensity = dot(view_dir, pushConstants.sun_dir);
 
-    float sun_disk = smoothstep(0.6, 1.0, sun_intensity);
+    float sun_disk = smoothstep(0.9, 1.0, sun_intensity);
 
     float3 final_color = lerp(pushConstants.sky_color, float3(0.9, 0.8, 0.7), sun_disk);
 

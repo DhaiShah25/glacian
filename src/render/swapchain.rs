@@ -1,10 +1,11 @@
-use ash::vk;
+use vulkanalia::vk::{
+    self, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands,
+};
+use vulkanalia::vk::{DeviceV1_0, HasBuilder};
 
 pub struct SwapchainData {
     pub image_views: Vec<vk::ImageView>,
-    pub swapchain_device: ash::khr::swapchain::Device,
     pub swapchain: vk::SwapchainKHR,
-    pub surface_loader: ash::khr::surface::Instance,
     pub surface: vk::SurfaceKHR,
     pub extent: vk::Extent2D,
     pub render_semaphores: Vec<vk::Semaphore>,
@@ -13,24 +14,21 @@ pub struct SwapchainData {
 impl SwapchainData {
     pub fn new(
         window: &sdl3::video::Window,
-        entry: &ash::Entry,
-        instance: &ash::Instance,
+        instance: &vulkanalia::Instance,
         physical_device: &vk::PhysicalDevice,
         queuefamilies: &[u32],
-        device: &ash::Device,
+        device: &vulkanalia::Device,
     ) -> Self {
-        let surface = window.vulkan_create_surface(instance.handle()).unwrap();
-
-        let surface_loader = ash::khr::surface::Instance::new(entry, instance);
+        let surface =
+            unsafe { vulkanalia::window::create_surface(instance, &window, &window) }.unwrap();
 
         let surface_capabilities = unsafe {
-            surface_loader.get_physical_device_surface_capabilities(*physical_device, surface)
+            instance.get_physical_device_surface_capabilities_khr(*physical_device, surface)
         }
         .unwrap();
 
-        let surface_formats = unsafe {
-            surface_loader.get_physical_device_surface_formats(*physical_device, surface)
-        };
+        let surface_formats =
+            unsafe { instance.get_physical_device_surface_formats_khr(*physical_device, surface) };
 
         let image_format = &surface_formats
             .unwrap()
@@ -43,7 +41,7 @@ impl SwapchainData {
             width: window.size().0,
         };
 
-        let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
+        let swapchain_create_info = vk::SwapchainCreateInfoKHR::builder()
             .surface(surface)
             .min_image_count(
                 3.max(surface_capabilities.min_image_count)
@@ -60,27 +58,26 @@ impl SwapchainData {
             .pre_transform(surface_capabilities.current_transform)
             .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
             .present_mode(vk::PresentModeKHR::FIFO);
-        let swapchain_device = ash::khr::swapchain::Device::new(instance, device);
         let swapchain = unsafe {
-            swapchain_device
-                .create_swapchain(&swapchain_create_info, None)
+            device
+                .create_swapchain_khr(&swapchain_create_info, None)
                 .unwrap()
         };
 
-        let swapchain_images = unsafe { swapchain_device.get_swapchain_images(swapchain).unwrap() };
+        let swapchain_images = unsafe { device.get_swapchain_images_khr(swapchain).unwrap() };
 
         let mut image_views = Vec::with_capacity(swapchain_images.len());
         let mut render_semaphores = Vec::with_capacity(swapchain_images.len());
         for image in &swapchain_images {
-            let subresource_range = vk::ImageSubresourceRange::default()
+            let subresource_range = vk::ImageSubresourceRange::builder()
                 .aspect_mask(vk::ImageAspectFlags::COLOR)
                 .base_mip_level(0)
                 .level_count(1)
                 .base_array_layer(0)
                 .layer_count(1);
-            let imageview_create_info = vk::ImageViewCreateInfo::default()
+            let imageview_create_info = vk::ImageViewCreateInfo::builder()
                 .image(*image)
-                .view_type(vk::ImageViewType::TYPE_2D)
+                .view_type(vk::ImageViewType::_2D)
                 .format(vk::Format::B8G8R8A8_UNORM)
                 .subresource_range(subresource_range);
             let imageview =
@@ -94,16 +91,14 @@ impl SwapchainData {
 
         Self {
             image_views,
-            swapchain_device,
             swapchain,
-            surface_loader,
             surface,
             extent,
             render_semaphores,
         }
     }
 
-    pub fn flush(&self, device: &ash::Device) {
+    pub fn flush(&self, device: &vulkanalia::Device, instance: &vulkanalia::Instance) {
         unsafe {
             for iv in &self.image_views {
                 device.destroy_image_view(*iv, None);
@@ -111,9 +106,8 @@ impl SwapchainData {
             for &semaphore in &self.render_semaphores {
                 device.destroy_semaphore(semaphore, None);
             }
-            self.swapchain_device
-                .destroy_swapchain(self.swapchain, None);
-            self.surface_loader.destroy_surface(self.surface, None);
+            device.destroy_swapchain_khr(self.swapchain, None);
+            instance.destroy_surface_khr(self.surface, None);
         }
     }
 }
@@ -127,10 +121,10 @@ pub struct FrameData {
 }
 
 impl FrameData {
-    pub fn new(device: &ash::Device) -> Self {
+    pub fn new(device: &vulkanalia::Device) -> Self {
         let pool = unsafe {
             device.create_command_pool(
-                &vk::CommandPoolCreateInfo::default()
+                &vk::CommandPoolCreateInfo::builder()
                     .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
                 None,
             )
@@ -138,7 +132,7 @@ impl FrameData {
         .unwrap();
         let cmd_bufs = unsafe {
             device.allocate_command_buffers(
-                &vk::CommandBufferAllocateInfo::default()
+                &vk::CommandBufferAllocateInfo::builder()
                     .command_pool(pool)
                     .level(vk::CommandBufferLevel::PRIMARY)
                     .command_buffer_count(1),
@@ -152,7 +146,7 @@ impl FrameData {
 
         let render_fence = unsafe {
             device.create_fence(
-                &vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED),
+                &vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED),
                 None,
             )
         }

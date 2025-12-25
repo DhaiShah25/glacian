@@ -1,6 +1,10 @@
 use std::ffi::CString;
 
-use ash::vk;
+use vulkanalia::vk::{
+    self, ExtDebugUtilsExtensionInstanceCommands, Handle, HasBuilder,
+    KhrSwapchainExtensionDeviceCommands,
+};
+use vulkanalia::vk::{DeviceV1_0, DeviceV1_3, InstanceV1_0};
 mod allocations;
 use allocations::{AllocatedImage, DescriptorAllocator};
 mod swapchain;
@@ -13,45 +17,43 @@ use utils::{copy_image_to_image, transition_image};
 mod descriptor;
 use descriptor::DescriptorLayoutBuilder;
 
-use tracing::{info, warn};
+use piglog::prelude::*;
+use piglog::warning;
 
 mod debug;
-use debug::DebugUtils;
 
 mod skybox;
-mod terrain;
+// mod terrain;
 
-pub struct VkRenderer {
-    pub entry: ash::Entry,
-    pub instance: ash::Instance,
-    pub device: ash::Device,
+pub struct Renderer {
+    pub entry: vulkanalia::Entry,
+    pub instance: vulkanalia::Instance,
+    pub device: vulkanalia::Device,
     pub physical_device: vk::PhysicalDevice,
     pub qfamindices: u32,
     queue: vk::Queue,
-    #[cfg(feature = "debug")]
-    debug_utils: DebugUtils,
+
+    #[cfg(feature = "logging")]
+    debug_messenger: vk::DebugUtilsMessengerEXT,
 
     swapchain_data: SwapchainData,
 
     frame_data: [FrameData; 2],
     frame_count: usize,
 
-    allocator: Option<vk_mem::Allocator>,
+    allocator: vulkanalia_vma::Allocator,
 
     draw_image: AllocatedImage,
     draw_extent: vk::Extent2D,
 
     descriptor_allocator: DescriptorAllocator,
 
-    draw_image_descriptors: vk::DescriptorSet,
-    draw_image_descriptor_layout: vk::DescriptorSetLayout,
-
     aspect_ratio: f32,
 
     skybox_data: skybox::Data,
 }
 
-impl VkRenderer {
+impl Renderer {
     const fn get_current_framedata(&self) -> FrameData {
         self.frame_data[self.frame_count % 2]
     }
@@ -60,19 +62,14 @@ impl VkRenderer {
     where
         Self: Sized,
     {
-        let entry = unsafe { ash::Entry::load() }.unwrap();
+        let loader =
+            unsafe { vulkanalia::loader::LibloadingLoader::new(vulkanalia::loader::LIBRARY) }
+                .unwrap();
+        let entry = unsafe { vulkanalia::Entry::new(loader) }.unwrap();
 
-        #[cfg(feature = "debug")]
-        if let Some(version) = unsafe { entry.try_enumerate_instance_version() }.unwrap() {
-            let major = vk::api_version_major(version);
-            let minor = vk::api_version_minor(version);
-            let patch = vk::api_version_patch(version);
-            info!("Running Vulkan Version: {}.{}.{}", major, minor, patch);
-        }
-
-        let app_info = vk::ApplicationInfo::default()
-            .api_version(vk::make_api_version(0, 1, 3, 206))
-            .application_name(c"Shadow Engine");
+        let app_info = vk::ApplicationInfo::builder()
+            .api_version(vk::make_version(1, 3, 206))
+            .application_name(b"Shadow Engine");
 
         let extensions = window
             .vulkan_instance_extensions()
@@ -83,11 +80,11 @@ impl VkRenderer {
 
         let mut extension_names: Vec<*const i8> = extensions.iter().map(|cs| cs.as_ptr()).collect();
 
-        #[cfg(feature = "debug")]
-        extension_names.push(ash::ext::debug_utils::NAME.as_ptr());
+        #[cfg(feature = "logging")]
+        extension_names.push(vk::EXT_DEBUG_UTILS_EXTENSION.name.as_cstr().as_ptr());
 
-        #[cfg(feature = "debug")]
-        let mut debugcreateinfo = vk::DebugUtilsMessengerCreateInfoEXT::default()
+        #[cfg(feature = "logging")]
+        let mut debugcreateinfo = vk::DebugUtilsMessengerCreateInfoEXT::builder()
             .message_severity(
                 vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
                     | vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE
@@ -99,32 +96,28 @@ impl VkRenderer {
                     | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE
                     | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION,
             )
-            .pfn_user_callback(Some(debug::callback));
+            .user_callback(Some(debug::callback));
 
-        let create_info = vk::InstanceCreateInfo::default()
+        let create_info = vk::InstanceCreateInfo::builder()
             .application_info(&app_info)
             .enabled_extension_names(&extension_names);
 
-        #[cfg(feature = "debug")]
+        #[cfg(feature = "logging")]
         let layers = vec![c"VK_LAYER_KHRONOS_validation".as_ptr()];
 
-        #[cfg(feature = "debug")]
+        #[cfg(feature = "logging")]
         let create_info = create_info
             .enabled_layer_names(&layers)
             .push_next(&mut debugcreateinfo);
 
         let instance = unsafe { entry.create_instance(&create_info, None) }.unwrap();
 
-        #[cfg(feature = "debug")]
-        let debug_utils = {
-            let debug_utils = ash::ext::debug_utils::Instance::new(&entry, &instance);
-            let utils_messenger = unsafe {
-                debug_utils
-                    .create_debug_utils_messenger(&debugcreateinfo, None)
-                    .unwrap()
-            };
-            DebugUtils::new(debug_utils, utils_messenger)
-        };
+        #[cfg(feature = "logging")]
+        piglog::note!("Running Vulkan Version: {}", instance.version());
+
+        #[cfg(feature = "logging")]
+        let debug_messenger =
+            unsafe { instance.create_debug_utils_messenger_ext(&debugcreateinfo, None) }.unwrap();
 
         let devices = unsafe { instance.enumerate_physical_devices() }.unwrap();
         let physical_device = *devices
@@ -132,7 +125,7 @@ impl VkRenderer {
             .find(|device| {
                 let props = unsafe { instance.get_physical_device_properties(**device) };
                 props.device_type == vk::PhysicalDeviceType::DISCRETE_GPU
-                    && props.api_version >= vk::make_api_version(0, 1, 3, 0)
+                    && props.api_version >= vk::make_version(1, 3, 0)
             })
             .unwrap_or_else(|| {
                 devices
@@ -140,12 +133,12 @@ impl VkRenderer {
                     .find(|device| {
                         let props = unsafe { instance.get_physical_device_properties(**device) };
                         props.device_type == vk::PhysicalDeviceType::INTEGRATED_GPU
-                            && props.api_version >= vk::make_api_version(0, 1, 3, 0)
+                            && props.api_version >= vk::make_version(1, 3, 0)
                     })
                     .unwrap()
             });
 
-        let device_extensions = vec![ash::khr::swapchain::NAME.as_ptr()];
+        let device_extensions = vec![vk::KHR_SWAPCHAIN_EXTENSION.name.as_cstr().as_ptr()];
 
         let queuefamilyproperties =
             unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
@@ -160,7 +153,7 @@ impl VkRenderer {
             found_graphics_q_index.unwrap()
         };
 
-        let queue_create_info = &[vk::DeviceQueueCreateInfo::default()
+        let queue_create_info = &[vk::DeviceQueueCreateInfo::builder()
             .queue_priorities(&[1.])
             .queue_family_index(qfamindices)];
 
@@ -168,16 +161,16 @@ impl VkRenderer {
             instance
                 .create_device(
                     physical_device,
-                    &vk::DeviceCreateInfo::default()
+                    &vk::DeviceCreateInfo::builder()
                         .enabled_extension_names(&device_extensions)
                         .queue_create_infos(queue_create_info)
                         .push_next(
-                            &mut vk::PhysicalDeviceVulkan12Features::default()
+                            &mut vk::PhysicalDeviceVulkan12Features::builder()
                                 .descriptor_indexing(true)
                                 .buffer_device_address(true),
                         )
                         .push_next(
-                            &mut vk::PhysicalDeviceVulkan13Features::default()
+                            &mut vk::PhysicalDeviceVulkan13Features::builder()
                                 .dynamic_rendering(true)
                                 .synchronization2(true),
                         ),
@@ -188,22 +181,16 @@ impl VkRenderer {
 
         let queue = unsafe { device.get_device_queue(qfamindices, 0) };
 
-        let swapchain_data = SwapchainData::new(
-            window,
-            &entry,
-            &instance,
-            &physical_device,
-            &[qfamindices],
-            &device,
-        );
+        let swapchain_data =
+            SwapchainData::new(window, &instance, &physical_device, &[qfamindices], &device);
 
         let frame_data = [FrameData::new(&device), FrameData::new(&device)];
 
         let mut alloc_create_info =
-            vk_mem::AllocatorCreateInfo::new(&instance, &device, physical_device);
-        alloc_create_info.flags = vk_mem::AllocatorCreateFlags::BUFFER_DEVICE_ADDRESS;
+            vulkanalia_vma::AllocatorOptions::new(&instance, &device, physical_device);
+        alloc_create_info.flags = vulkanalia_vma::AllocatorCreateFlags::BUFFER_DEVICE_ADDRESS;
 
-        let allocator = unsafe { vk_mem::Allocator::new(alloc_create_info) }.unwrap();
+        let allocator = unsafe { vulkanalia_vma::Allocator::new(&alloc_create_info) }.unwrap();
 
         let win_size = window.size();
         let draw_extent = vk::Extent2D {
@@ -217,10 +204,11 @@ impl VkRenderer {
                 | vk::ImageUsageFlags::TRANSFER_DST
                 | vk::ImageUsageFlags::STORAGE
                 | vk::ImageUsageFlags::COLOR_ATTACHMENT,
-            vk::Extent3D::default()
+            vk::Extent3D::builder()
                 .width(draw_extent.width)
                 .height(draw_extent.height)
-                .depth(1),
+                .depth(1)
+                .build(),
             vk::ImageAspectFlags::COLOR,
             &allocator,
             &device,
@@ -231,32 +219,32 @@ impl VkRenderer {
             .collect();
 
         let descriptor_allocator = DescriptorAllocator::new(&device, 10, &sizes);
-        let draw_image_descriptor_layout = {
-            let mut builder = DescriptorLayoutBuilder::new();
-            builder.add_binding(0, vk::DescriptorType::STORAGE_IMAGE);
-            builder.build(
-                &device,
-                vk::ShaderStageFlags::COMPUTE,
-                vk::DescriptorSetLayoutCreateFlags::empty(),
-            )
-        };
-        let draw_image_descriptors =
-            descriptor_allocator.allocate(&device, draw_image_descriptor_layout);
+        // let draw_image_descriptor_layout = {
+        //     let mut builder = DescriptorLayoutBuilder::new();
+        //     builder.add_binding(0, vk::DescriptorType::STORAGE_IMAGE);
+        //     builder.build(
+        //         &device,
+        //         vk::ShaderStageFlags::COMPUTE,
+        //         vk::DescriptorSetLayoutCreateFlags::empty(),
+        //     )
+        // };
+        // let draw_image_descriptors =
+        //     descriptor_allocator.allocate(&device, draw_image_descriptor_layout);
+        //
+        // let img_info = [vk::DescriptorImageInfo::default()
+        //     .image_layout(vk::ImageLayout::GENERAL)
+        //     .image_view(draw_image.view)];
+        //
+        // let draw_image_write = vk::WriteDescriptorSet::default()
+        //     .dst_binding(0)
+        //     .dst_set(draw_image_descriptors)
+        //     .descriptor_count(1)
+        //     .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+        //     .image_info(&img_info);
+        //
+        // unsafe { device.update_descriptor_sets(&[draw_image_write], &[]) };
 
-        let img_info = [vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::GENERAL)
-            .image_view(draw_image.view)];
-
-        let draw_image_write = vk::WriteDescriptorSet::default()
-            .dst_binding(0)
-            .dst_set(draw_image_descriptors)
-            .descriptor_count(1)
-            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-            .image_info(&img_info);
-
-        unsafe { device.update_descriptor_sets(&[draw_image_write], &[]) };
-
-        let skybox_data = skybox::Data::new(&device, &allocator, &queue);
+        let skybox_data = skybox::Data::new(&device, &allocator, &queue).unwrap();
 
         let (width, height) = window.size();
 
@@ -266,19 +254,19 @@ impl VkRenderer {
             device,
             physical_device,
             qfamindices,
-            #[cfg(feature = "debug")]
-            debug_utils,
+            #[cfg(feature = "logging")]
+            debug_messenger,
             swapchain_data,
             frame_data,
             frame_count: 0,
-            allocator: Some(allocator),
+            allocator,
 
             draw_extent,
             draw_image,
 
             descriptor_allocator,
-            draw_image_descriptors,
-            draw_image_descriptor_layout,
+            // draw_image_descriptors,
+            // draw_image_descriptor_layout,
 
             // comp_pipeline,
             // comp_pipeline_layout,
@@ -297,10 +285,9 @@ impl VkRenderer {
         let (width, height) = window.size();
 
         unsafe { self.device.device_wait_idle() }.unwrap();
-        self.swapchain_data.flush(&self.device);
+        self.swapchain_data.flush(&self.device, &self.instance);
         self.swapchain_data = SwapchainData::new(
             window,
-            &self.entry,
             &self.instance,
             &self.physical_device,
             &[self.qfamindices],
@@ -308,35 +295,22 @@ impl VkRenderer {
         );
 
         self.draw_extent = vk::Extent2D { height, width };
-        self.draw_image
-            .flush(&self.device, self.allocator.as_ref().unwrap());
+        self.draw_image.flush(&self.device, &self.allocator);
         self.draw_image = AllocatedImage::new(
             vk::Format::R16G16B16A16_SFLOAT,
             vk::ImageUsageFlags::TRANSFER_SRC
                 | vk::ImageUsageFlags::TRANSFER_DST
                 | vk::ImageUsageFlags::STORAGE
                 | vk::ImageUsageFlags::COLOR_ATTACHMENT,
-            vk::Extent3D::default()
+            vk::Extent3D::builder()
                 .width(self.draw_extent.width)
                 .height(self.draw_extent.height)
-                .depth(1),
+                .depth(1)
+                .build(),
             vk::ImageAspectFlags::COLOR,
-            self.allocator.as_ref().unwrap(),
+            &self.allocator,
             &self.device,
         );
-
-        let img_info = [vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::GENERAL)
-            .image_view(self.draw_image.view)];
-
-        let draw_image_write = vk::WriteDescriptorSet::default()
-            .dst_binding(0)
-            .dst_set(self.draw_image_descriptors)
-            .descriptor_count(1)
-            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-            .image_info(&img_info);
-
-        unsafe { self.device.update_descriptor_sets(&[draw_image_write], &[]) };
 
         self.aspect_ratio = width as f32 / height as f32;
     }
@@ -348,16 +322,14 @@ impl VkRenderer {
         let cmd_buf = self.get_current_framedata().buf;
 
         let swapchain_images = unsafe {
-            self.swapchain_data
-                .swapchain_device
-                .get_swapchain_images(self.swapchain_data.swapchain)
+            self.device
+                .get_swapchain_images_khr(self.swapchain_data.swapchain)
         }
         .unwrap();
 
         let next_img = unsafe {
-            self.swapchain_data
-                .swapchain_device
-                .acquire_next_image(
+            self.device
+                .acquire_next_image_khr(
                     self.swapchain_data.swapchain,
                     1_000_000_000,
                     self.get_current_framedata().swapchain_semaphore,
@@ -366,8 +338,9 @@ impl VkRenderer {
                 .unwrap()
         };
 
-        if next_img.1 {
-            warn!("Suboptimal swapchain for the surface");
+        #[cfg(feature = "logging")]
+        if next_img.1 == vk::SuccessCode::SUBOPTIMAL_KHR {
+            warning!("Suboptimal swapchain for the surface");
         }
 
         unsafe {
@@ -382,7 +355,7 @@ impl VkRenderer {
         unsafe {
             self.device.begin_command_buffer(
                 cmd_buf,
-                &vk::CommandBufferBeginInfo::default()
+                &vk::CommandBufferBeginInfo::builder()
                     .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )
         }
@@ -462,14 +435,14 @@ impl VkRenderer {
         unsafe {
             self.device.queue_submit2(
                 self.queue,
-                &[vk::SubmitInfo2::default()
-                    .wait_semaphore_infos(&[vk::SemaphoreSubmitInfo::default()
+                &[vk::SubmitInfo2::builder()
+                    .wait_semaphore_infos(&[vk::SemaphoreSubmitInfo::builder()
                         .semaphore(self.get_current_framedata().swapchain_semaphore)
                         .stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)])
-                    .command_buffer_infos(&[vk::CommandBufferSubmitInfo::default()
+                    .command_buffer_infos(&[vk::CommandBufferSubmitInfo::builder()
                         .command_buffer(cmd_buf)
                         .device_mask(0)])
-                    .signal_semaphore_infos(&[vk::SemaphoreSubmitInfo::default()
+                    .signal_semaphore_infos(&[vk::SemaphoreSubmitInfo::builder()
                         .semaphore(current_render_semaphore)
                         .stage_mask(vk::PipelineStageFlags2::ALL_GRAPHICS)])],
                 self.get_current_framedata().render_fence,
@@ -478,9 +451,9 @@ impl VkRenderer {
         .unwrap();
 
         unsafe {
-            self.swapchain_data.swapchain_device.queue_present(
+            self.device.queue_present_khr(
                 self.queue,
-                &vk::PresentInfoKHR::default()
+                &vk::PresentInfoKHR::builder()
                     .swapchains(&[self.swapchain_data.swapchain])
                     .wait_semaphores(&[current_render_semaphore])
                     .image_indices(&[next_img.0]),
@@ -492,25 +465,22 @@ impl VkRenderer {
     }
 }
 
-impl Drop for VkRenderer {
+impl Drop for Renderer {
     fn drop(&mut self) {
         unsafe {
             self.device.device_wait_idle().unwrap();
 
             self.descriptor_allocator.flush(&self.device);
-            self.device
-                .destroy_descriptor_set_layout(self.draw_image_descriptor_layout, None);
 
-            self.draw_image
-                .flush(&self.device, self.allocator.as_ref().unwrap());
+            self.draw_image.flush(&self.device, &self.allocator);
 
-            self.swapchain_data.flush(&self.device);
+            self.swapchain_data.flush(&self.device, &self.instance);
 
-            self.skybox_data
-                .destroy(&self.device, self.allocator.as_ref().unwrap());
+            self.skybox_data.destroy(&self.device, &self.allocator);
 
-            #[cfg(feature = "debug")]
-            self.debug_utils.destroy();
+            #[cfg(feature = "logging")]
+            self.instance
+                .destroy_debug_utils_messenger_ext(self.debug_messenger, None);
 
             for i in 0..self.frame_data.len() {
                 self.device
@@ -523,8 +493,6 @@ impl Drop for VkRenderer {
                 .destroy_command_pool(self.frame_data[0].pool, None);
             self.device
                 .destroy_command_pool(self.frame_data[1].pool, None);
-
-            drop(self.allocator.take());
 
             self.device.destroy_device(None);
             self.instance.destroy_instance(None);

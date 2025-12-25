@@ -1,7 +1,7 @@
-use ash::vk;
+use vulkanalia::vk::{self, DeviceV1_0, HasBuilder};
 
 pub struct DescriptorLayoutBuilder<'a> {
-    bindings: Vec<vk::DescriptorSetLayoutBinding<'a>>,
+    bindings: Vec<vk::DescriptorSetLayoutBindingBuilder<'a>>,
 }
 
 impl<'a> DescriptorLayoutBuilder<'a> {
@@ -11,7 +11,7 @@ impl<'a> DescriptorLayoutBuilder<'a> {
 
     pub fn add_binding(&mut self, binding: u32, descriptor_type: vk::DescriptorType) {
         self.bindings.push(
-            vk::DescriptorSetLayoutBinding::default()
+            vk::DescriptorSetLayoutBinding::builder()
                 .binding(binding)
                 .descriptor_count(1)
                 .descriptor_type(descriptor_type),
@@ -24,7 +24,7 @@ impl<'a> DescriptorLayoutBuilder<'a> {
 
     pub fn build(
         &mut self,
-        device: &ash::Device,
+        device: &vulkanalia::Device,
         shader_stages: vk::ShaderStageFlags,
         flags: vk::DescriptorSetLayoutCreateFlags,
     ) -> vk::DescriptorSetLayout {
@@ -32,7 +32,7 @@ impl<'a> DescriptorLayoutBuilder<'a> {
             .iter_mut()
             .for_each(|binding| binding.stage_flags |= shader_stages);
 
-        let info = vk::DescriptorSetLayoutCreateInfo::default()
+        let info = vk::DescriptorSetLayoutCreateInfo::builder()
             .bindings(&self.bindings)
             .flags(flags);
 
