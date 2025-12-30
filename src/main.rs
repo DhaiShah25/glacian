@@ -1,10 +1,9 @@
-use piglog::prelude::*;
 use sdl3::{event::Event, keyboard::Keycode};
 use std::time::Instant;
 mod render;
-use rootcause::prelude::{Report, ResultExt};
+use rootcause::prelude::Report;
 
-const SENSITIVITY: f32 = std::f32::consts::PI / 512.;
+const SENSITIVITY: f32 = std::f32::consts::PI / 1024.;
 
 fn main() -> Result<(), Report> {
     let sdl_context = sdl3::init()?;
@@ -26,7 +25,7 @@ fn main() -> Result<(), Report> {
 
     let mut player_pos = glam::vec3(0., 0., 0.);
 
-    let (mut yaw, mut pitch) = (0., std::f32::consts::PI);
+    let (mut yaw, mut pitch) = (0., 0.);
 
     let start_time = Instant::now();
 
@@ -75,6 +74,7 @@ fn main() -> Result<(), Report> {
                         &window,
                         !sdl_context.mouse().relative_mouse_mode(&window),
                     );
+                    break 'running;
                 }
                 // Event::KeyDown { .., keycode: Some(Keycode::A), scancode, keymod, repeat, which, raw } => (),
                 // Event::KeyUp { .., keycode, scancode, keymod, repeat, which, raw } => (),
@@ -94,16 +94,14 @@ fn main() -> Result<(), Report> {
             glam::Vec3::Z,
         );
 
-        let elapsed_time = start_time.elapsed().as_secs_f32();
+        let elapsed_time = start_time.elapsed().as_secs_f32() / 4.0;
 
-        let sun_dir_vector = glam::vec3a(
-            elapsed_time.cos(), // X component
-            elapsed_time.sin(), // Y component
-            0.5,                // Fixed Z component (downward angle)
-        )
-        .normalize();
+        let sky_color = glam::vec3a(0.7, 0.7, 1.0)
+            .lerp(glam::vec3a(0., 0., 0.), ((elapsed_time).cos() + 1.) * 0.5);
 
-        r.render(view, sun_dir_vector);
+        dbg!(sky_color);
+
+        r.render(view, sky_color);
         std::thread::sleep(std::time::Duration::from_millis(16));
     }
     Ok(())

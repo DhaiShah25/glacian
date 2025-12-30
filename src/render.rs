@@ -1,4 +1,5 @@
 use std::ffi::CString;
+use std::mem::ManuallyDrop;
 
 use vulkanalia::vk::{
     self, ExtDebugUtilsExtensionInstanceCommands, Handle, HasBuilder,
@@ -15,7 +16,6 @@ mod utils;
 use utils::{copy_image_to_image, transition_image};
 
 mod descriptor;
-use descriptor::DescriptorLayoutBuilder;
 
 use piglog::prelude::*;
 use piglog::warning;
@@ -23,15 +23,17 @@ use piglog::warning;
 mod debug;
 
 mod skybox;
-// mod terrain;
 
 pub struct Renderer {
-    pub entry: vulkanalia::Entry,
+    _entry: vulkanalia::Entry,
     pub instance: vulkanalia::Instance,
     pub device: vulkanalia::Device,
     pub physical_device: vk::PhysicalDevice,
+
     pub qfamindices: u32,
     queue: vk::Queue,
+
+    allocator: ManuallyDrop<vulkanalia_vma::Allocator>,
 
     #[cfg(feature = "logging")]
     debug_messenger: vk::DebugUtilsMessengerEXT,
@@ -39,9 +41,7 @@ pub struct Renderer {
     swapchain_data: SwapchainData,
 
     frame_data: [FrameData; 2],
-    frame_count: usize,
-
-    allocator: vulkanalia_vma::Allocator,
+    frame_count: u64,
 
     draw_image: AllocatedImage,
     draw_extent: vk::Extent2D,
@@ -55,7 +55,7 @@ pub struct Renderer {
 
 impl Renderer {
     const fn get_current_framedata(&self) -> FrameData {
-        self.frame_data[self.frame_count % 2]
+        self.frame_data[self.frame_count as usize & 1]
     }
 
     pub fn new(window: &sdl3::video::Window) -> Self
@@ -170,6 +170,10 @@ impl Renderer {
                                 .buffer_device_address(true),
                         )
                         .push_next(
+                            &mut vk::PhysicalDeviceVulkan11Features::builder()
+                                .shader_draw_parameters(true),
+                        )
+                        .push_next(
                             &mut vk::PhysicalDeviceVulkan13Features::builder()
                                 .dynamic_rendering(true)
                                 .synchronization2(true),
@@ -244,12 +248,14 @@ impl Renderer {
         //
         // unsafe { device.update_descriptor_sets(&[draw_image_write], &[]) };
 
-        let skybox_data = skybox::Data::new(&device, &allocator, &queue).unwrap();
+        let skybox_data = skybox::Data::new(&device).unwrap();
 
         let (width, height) = window.size();
 
+        let allocator = ManuallyDrop::new(allocator);
+
         Self {
-            entry,
+            _entry: entry,
             instance,
             device,
             physical_device,
@@ -315,7 +321,7 @@ impl Renderer {
         self.aspect_ratio = width as f32 / height as f32;
     }
 
-    pub fn render(&mut self, view_mat: glam::Mat4, sun_dir: glam::Vec3A) {
+    pub fn render(&mut self, _view_mat: glam::Mat4, sky_color: glam::Vec3A) {
         let fence = self.get_current_framedata().render_fence;
         unsafe { self.device.wait_for_fences(&[fence], true, 1_000_000_000) }.unwrap();
         unsafe { self.device.reset_fences(&[fence]) }.unwrap();
@@ -369,29 +375,12 @@ impl Renderer {
             &self.device,
         );
 
-        let sky_view_mat = {
-            let mut tmp = view_mat;
-
-            tmp.col_mut(3).x = 0.0;
-            tmp.col_mut(3).y = 0.0;
-            tmp.col_mut(3).z = 0.0;
-            tmp
-        };
-
         self.skybox_data.draw(
             &self.device,
             cmd_buf,
             self.draw_image.view,
             self.draw_extent,
-            skybox::PushConstants::new(
-                glam::Mat4::perspective_infinite_rh(
-                    std::f32::consts::FRAC_PI_3,
-                    self.aspect_ratio,
-                    2.,
-                ) * sky_view_mat,
-                glam::vec3a(0.7, 0.7, 1.0),
-                sun_dir,
-            ),
+            skybox::PushConstants::new(sky_color),
         );
 
         unsafe { self.device.cmd_end_rendering(cmd_buf) };
@@ -467,6 +456,7 @@ impl Renderer {
 
 impl Drop for Renderer {
     fn drop(&mut self) {
+        use std::mem::ManuallyDrop;
         unsafe {
             self.device.device_wait_idle().unwrap();
 
@@ -476,7 +466,7 @@ impl Drop for Renderer {
 
             self.swapchain_data.flush(&self.device, &self.instance);
 
-            self.skybox_data.destroy(&self.device, &self.allocator);
+            self.skybox_data.destroy(&self.device);
 
             #[cfg(feature = "logging")]
             self.instance
@@ -493,6 +483,8 @@ impl Drop for Renderer {
                 .destroy_command_pool(self.frame_data[0].pool, None);
             self.device
                 .destroy_command_pool(self.frame_data[1].pool, None);
+
+            ManuallyDrop::drop(&mut self.allocator);
 
             self.device.destroy_device(None);
             self.instance.destroy_instance(None);

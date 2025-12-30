@@ -7,7 +7,6 @@ pub struct AllocatedImage {
     pub view: vk::ImageView,
     pub allocation: vulkanalia_vma::Allocation,
     pub extent: vk::Extent3D,
-    pub format: vk::Format,
 }
 
 impl AllocatedImage {
@@ -61,7 +60,6 @@ impl AllocatedImage {
             view,
             allocation,
             extent,
-            format,
         }
     }
 

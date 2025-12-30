@@ -1,44 +1,32 @@
-use crate::render::allocations::AllocatedBuffer;
 use rootcause::{Report, prelude::ResultExt};
 
 use super::utils::load_shader_module;
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, Vec3A};
+use glam::Vec3A;
 use vulkanalia::vk::{self, DeviceV1_0, DeviceV1_3, Handle, HasBuilder};
 
 pub struct Data {
     pipeline: vk::Pipeline,
     layout: vk::PipelineLayout,
-    idx_buffer: AllocatedBuffer,
 }
 
 #[repr(C, packed)]
 #[derive(Debug, Pod, Zeroable, Copy, Clone)]
 pub struct PushConstants {
-    view_proj: Mat4,
     sky_color: Vec3A,
-    sun_dir: Vec3A,
 }
 
 impl PushConstants {
-    pub const fn new(view_proj: Mat4, sky_color: Vec3A, sun_dir: Vec3A) -> Self {
-        Self {
-            view_proj,
-            sky_color,
-            sun_dir,
-        }
+    pub const fn new(sky_color: Vec3A) -> Self {
+        Self { sky_color }
     }
 }
 
 impl Data {
-    pub fn new(
-        device: &vulkanalia::Device,
-        allocator: &vulkanalia_vma::Allocator,
-        transfer_queue: &vk::Queue,
-    ) -> Result<Self, Report> {
+    pub fn new(device: &vulkanalia::Device) -> Result<Self, Report> {
         let layout = {
             let push_range_contants = [vk::PushConstantRange::builder()
-                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT)
                 .size(size_of::<PushConstants>() as u32)];
             let info =
                 vk::PipelineLayoutCreateInfo::builder().push_constant_ranges(&push_range_contants);
@@ -137,99 +125,7 @@ impl Data {
             pipeline
         };
 
-        let idx_buffer = AllocatedBuffer::new(
-            allocator,
-            36 * size_of::<u16>() as u64,
-            vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
-            vulkanalia_vma::MemoryUsage::AutoPreferDevice,
-        );
-
-        let mut staging = AllocatedBuffer::new(
-            allocator,
-            36 * size_of::<u16>() as u64,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            vulkanalia_vma::MemoryUsage::AutoPreferHost,
-        );
-
-        let mem = unsafe { allocator.map_memory(staging.allocation) }
-            .context("Not Able To Access Necessary Memory For Skybox")?;
-
-        let data_slice: &mut [u8] =
-            unsafe { std::slice::from_raw_parts_mut(mem, 36 * size_of::<u16>()) };
-
-        const INDICES: [u16; 36] = [
-            // Front face (v0, v1, v2, v3)
-            0, 1, 2, // First triangle
-            0, 2, 3, // Second triangle
-            // Right face (v1, v5, v6, v2)
-            1, 5, 6, // First triangle
-            1, 6, 2, // Second triangle
-            // Back face (v5, v4, v7, v6)
-            5, 4, 7, // First triangle
-            5, 7, 6, // Second triangle
-            // Left face (v4, v0, v3, v7)
-            4, 0, 3, // First triangle
-            4, 3, 7, // Second triangle
-            // Top face (v3, v2, v6, v7)
-            3, 2, 6, // First triangle
-            3, 6, 7, // Second triangle
-            // Bottom face (v4, v5, v1, v0)
-            4, 5, 1, // First triangle
-            4, 1, 0, // Second triangle
-        ];
-
-        let index_bytes = bytemuck::cast_slice(&INDICES);
-        data_slice[0..36 * size_of::<u16>()].copy_from_slice(index_bytes);
-
-        unsafe { allocator.unmap_memory(staging.allocation) };
-
-        unsafe {
-            let submit_fence = device.create_fence(&vk::FenceCreateInfo::default(), None)?;
-            let cmd_pool =
-                device.create_command_pool(&vk::CommandPoolCreateInfo::default(), None)?;
-            let cmd = device.allocate_command_buffers(
-                &vk::CommandBufferAllocateInfo::builder()
-                    .command_pool(cmd_pool)
-                    .level(vk::CommandBufferLevel::PRIMARY)
-                    .command_buffer_count(1),
-            )?[0];
-            device.begin_command_buffer(
-                cmd,
-                &vk::CommandBufferBeginInfo::builder()
-                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-            )?;
-
-            device.cmd_copy_buffer(
-                cmd,
-                staging.buf,
-                idx_buffer.buf,
-                &[vk::BufferCopy::builder().size(36 * size_of::<u16>() as u64)],
-            );
-
-            device.end_command_buffer(cmd)?;
-
-            device.queue_submit2(
-                *transfer_queue,
-                &[vk::SubmitInfo2::builder().command_buffer_infos(&[
-                    vk::CommandBufferSubmitInfo::builder()
-                        .command_buffer(cmd)
-                        .device_mask(0),
-                ])],
-                submit_fence,
-            )?;
-            device.wait_for_fences(&[submit_fence], true, 999999999)?;
-
-            device.destroy_command_pool(cmd_pool, None);
-            device.destroy_fence(submit_fence, None);
-        }
-
-        staging.flush(allocator);
-
-        Ok(Self {
-            layout,
-            pipeline,
-            idx_buffer,
-        })
+        Ok(Self { layout, pipeline })
     }
 
     pub fn draw(
@@ -282,20 +178,18 @@ impl Data {
             device.cmd_push_constants(
                 cmd,
                 self.layout,
-                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                vk::ShaderStageFlags::FRAGMENT,
                 0,
                 bytemuck::bytes_of(&constants),
             );
-            device.cmd_bind_index_buffer(cmd, self.idx_buffer.buf, 0, vk::IndexType::UINT16);
-            device.cmd_draw_indexed(cmd, 36, 1, 0, 0, 0);
+            device.cmd_draw(cmd, 3, 1, 0, 0);
         }
     }
 
-    pub fn destroy(&mut self, device: &vulkanalia::Device, allocator: &vulkanalia_vma::Allocator) {
+    pub fn destroy(&mut self, device: &vulkanalia::Device) {
         unsafe {
             device.destroy_pipeline(self.pipeline, None);
             device.destroy_pipeline_layout(self.layout, None);
         }
-        self.idx_buffer.flush(allocator);
     }
 }
