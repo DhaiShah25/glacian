@@ -1,5 +1,8 @@
 # Glacian
 
+**IN PROGRESS**
+**None Of The Features Have Been Fully Implemented**
+
 A Simplistic Voxel Game Engine.
 
 # Goals
